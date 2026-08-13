@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT}/backend/src${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -x "${ROOT}/backend/.venv/bin/python" ]]; then
+  exec "${ROOT}/backend/.venv/bin/python" -m agent_window.cli "$@"
+else
+  exec python3 -m agent_window.cli "$@"
+fi
