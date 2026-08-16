@@ -69,6 +69,215 @@ def cmd_workspace(client: RuntimeClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def _fetch_pending(client: RuntimeClient) -> Dict[str, List[Dict[str, Any]]]:
+    return {
+        "patches": list(client.get("/api/workspace/patches") or []),
+        "shells": list(client.get("/api/workspace/shells") or []),
+        "memories": list(client.get("/api/memory/proposals") or []),
+    }
+
+
+def _preview(text: str, limit: int = 80) -> str:
+    one = " ".join((text or "").split())
+    if len(one) <= limit:
+        return one
+    return one[: limit - 1] + "…"
+
+
+def _status_payload(client: RuntimeClient, session_id: Optional[str]) -> Dict[str, Any]:
+    pending = _fetch_pending(client)
+    runtime = client.get("/api/runtime") or {}
+    active = list(runtime.get("active_sessions") or [])
+    payload: Dict[str, Any] = {
+        "patches": pending["patches"],
+        "shells": pending["shells"],
+        "memories": pending["memories"],
+        "awaiting_approval": bool(
+            pending["patches"] or pending["shells"] or pending["memories"]
+        ),
+        "active_sessions": active,
+        "pending_scope": "workspace",
+    }
+    if not session_id:
+        return payload
+
+    sessions = client.get("/api/sessions") or []
+    sess = next((s for s in sessions if s.get("id") == session_id), None)
+    if not sess:
+        raise ApiError(f"session not found: {session_id}", status=404)
+    messages = client.get(f"/api/sessions/{session_id}/messages") or []
+    last = messages[-1] if messages else None
+    last_public = None
+    if last:
+        last_public = {
+            "id": last.get("id"),
+            "role": last.get("role"),
+            "content": _preview(str(last.get("content") or ""), 200),
+        }
+    payload["session"] = {
+        "id": session_id,
+        "title": sess.get("title"),
+        "is_running": session_id in active,
+        "last_message": last_public,
+    }
+    return payload
+
+
+def _print_status(payload: Dict[str, Any]) -> None:
+    session = payload.get("session")
+    if session:
+        running = "是" if session.get("is_running") else "否"
+        print(f"会话: {session.get('title') or ''} ({session.get('id')})")
+        print(f"运行中: {running}")
+        last = session.get("last_message")
+        if last:
+            print(f"最近消息: [{last.get('role')}] {_preview(str(last.get('content') or ''))}")
+    else:
+        active = payload.get("active_sessions") or []
+        print(f"运行中会话: {', '.join(active) if active else '(无)'}")
+
+    patches = payload.get("patches") or []
+    shells = payload.get("shells") or []
+    memories = payload.get("memories") or []
+    if not (patches or shells or memories):
+        print("待审批: (无)")
+        return
+
+    print("待审批（工作区全局）:")
+    for p in patches:
+        print(f"  [patch]  {p.get('id')}  path={p.get('path')}  status={p.get('status')}")
+        print(f"           hal approve --patch-id {p.get('id')}")
+    for s in shells:
+        print(f"  [shell]  {s.get('id')}  cmd={s.get('command')}  status={s.get('status')}")
+        print(f"           hal approve --shell-id {s.get('id')}")
+    for m in memories:
+        preview = _preview(str(m.get("preview") or m.get("content") or ""), 60)
+        print(f"  [memory] {m.get('id')}  mode={m.get('mode')}  status={m.get('status')}  {preview}")
+        print(f"           hal approve --memory-id {m.get('id')}")
+
+
+def cmd_status(client: RuntimeClient, args: argparse.Namespace) -> int:
+    payload = _status_payload(client, args.session)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    _print_status(payload)
+    return 0
+
+
+def _explicit_targets(args: argparse.Namespace) -> List[tuple[str, str]]:
+    targets: List[tuple[str, str]] = []
+    for pid in args.patch_ids or []:
+        targets.append(("patch", pid))
+    for sid in args.shell_ids or []:
+        targets.append(("shell", sid))
+    for mid in args.memory_ids or []:
+        targets.append(("memory", mid))
+    return targets
+
+
+def _gate_paths(kind: str, item_id: str) -> tuple[str, str]:
+    if kind == "patch":
+        base = f"/api/workspace/patches/{item_id}"
+    elif kind == "shell":
+        base = f"/api/workspace/shells/{item_id}"
+    elif kind == "memory":
+        base = f"/api/memory/proposals/{item_id}"
+    else:
+        raise ApiError(f"unknown kind: {kind}")
+    return f"{base}/apply", f"{base}/reject"
+
+
+def _label_item(kind: str, item: Dict[str, Any]) -> str:
+    if kind == "patch":
+        return f"patch {item.get('id')} path={item.get('path')}"
+    if kind == "shell":
+        return f"shell {item.get('id')} cmd={item.get('command')}"
+    return f"memory {item.get('id')} mode={item.get('mode')}"
+
+
+def _decide_one(client: RuntimeClient, kind: str, item_id: str, action: str) -> Dict[str, Any]:
+    apply_path, reject_path = _gate_paths(kind, item_id)
+    path = apply_path if action == "apply" else reject_path
+    result = client.post(path)
+    return result if isinstance(result, dict) else {"id": item_id, "status": action}
+
+
+def _print_decision(kind: str, action: str, result: Dict[str, Any]) -> None:
+    status = result.get("status") or action
+    item_id = result.get("id") or ""
+    extra = result.get("path") or result.get("command") or result.get("mode") or ""
+    verb = "已批准" if action == "apply" else "已拒绝"
+    print(f"{verb} [{kind}] {item_id}  status={status}  {extra}".rstrip())
+    if result.get("error"):
+        _eprint(f"  error: {result['error']}")
+
+
+def _interactive_pending(
+    client: RuntimeClient,
+    action: str,
+    *,
+    no_input: bool,
+) -> int:
+    pending = _fetch_pending(client)
+    items: List[tuple[str, Dict[str, Any]]] = []
+    for p in pending["patches"]:
+        items.append(("patch", p))
+    for s in pending["shells"]:
+        items.append(("shell", s))
+    for m in pending["memories"]:
+        items.append(("memory", m))
+    if not items:
+        print("待审批: (无)")
+        return 0
+    if no_input or not sys.stdin.isatty():
+        _eprint("非交互模式请指定 --patch-id / --shell-id / --memory-id")
+        _print_status(
+            {
+                "patches": pending["patches"],
+                "shells": pending["shells"],
+                "memories": pending["memories"],
+                "active_sessions": [],
+            }
+        )
+        return 2
+
+    prompt = "批准这项？" if action == "apply" else "拒绝这项？"
+    n = 0
+    for kind, item in items:
+        item_id = str(item.get("id") or "")
+        _eprint(_label_item(kind, item))
+        if not _confirm(prompt, yes=False, no_input=False):
+            _eprint("  跳过")
+            continue
+        result = _decide_one(client, kind, item_id, action)
+        _print_decision(kind, action, result)
+        n += 1
+    if n == 0:
+        print("未更改")
+    return 0
+
+
+def cmd_approve(client: RuntimeClient, args: argparse.Namespace) -> int:
+    targets = _explicit_targets(args)
+    if not targets:
+        return _interactive_pending(client, "apply", no_input=args.no_input)
+    for kind, item_id in targets:
+        result = _decide_one(client, kind, item_id, "apply")
+        _print_decision(kind, "apply", result)
+    return 0
+
+
+def cmd_reject(client: RuntimeClient, args: argparse.Namespace) -> int:
+    targets = _explicit_targets(args)
+    if not targets:
+        return _interactive_pending(client, "reject", no_input=args.no_input)
+    for kind, item_id in targets:
+        result = _decide_one(client, kind, item_id, "reject")
+        _print_decision(kind, "reject", result)
+    return 0
+
+
 def _handle_approval(client: RuntimeClient, event: Dict[str, Any], args: argparse.Namespace) -> None:
     kind = event.get("kind")
     if kind == "patch":
@@ -220,7 +429,7 @@ def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
         session_id = created["id"]
         _eprint(f"[session] {session_id}")
 
-    return _stream_turn(
+    code = _stream_turn(
         client,
         session_id,
         content=prompt,
@@ -229,6 +438,14 @@ def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
         args=args,
         out=sys.stdout,
     )
+    try:
+        leftover = _fetch_pending(client)
+    except ApiError:
+        return code
+    if leftover["patches"] or leftover["shells"] or leftover["memories"]:
+        _eprint("仍有待审批，查看: hal status")
+        _eprint("批准: hal approve --patch-id|--shell-id|--memory-id <id>")
+    return code
 
 
 def cmd_run(client: RuntimeClient, args: argparse.Namespace) -> int:
@@ -307,6 +524,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="Same as ask (task-oriented alias)")
     add_ask_flags(p_run)
     p_run.set_defaults(func=cmd_run)
+
+    p_status = sub.add_parser("status", help="Show pending patch/shell/memory approvals")
+    p_status.add_argument(
+        "-s",
+        "--session",
+        "--session-id",
+        dest="session",
+        help="Optional session id (running/last message); pending lists are workspace-global",
+    )
+    p_status.add_argument("--json", action="store_true")
+    p_status.set_defaults(func=cmd_status)
+
+    def add_gate_flags(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--patch-id", action="append", dest="patch_ids", help="Patch id (repeatable)")
+        p.add_argument("--shell-id", action="append", dest="shell_ids", help="Shell id (repeatable)")
+        p.add_argument("--memory-id", action="append", dest="memory_ids", help="Memory proposal id")
+        p.add_argument(
+            "--no-input",
+            action="store_true",
+            help="Do not prompt; require explicit --patch-id / --shell-id / --memory-id",
+        )
+
+    p_approve = sub.add_parser("approve", help="Approve pending patch/shell/memory")
+    add_gate_flags(p_approve)
+    p_approve.set_defaults(func=cmd_approve)
+
+    p_reject = sub.add_parser("reject", help="Reject pending patch/shell/memory")
+    add_gate_flags(p_reject)
+    p_reject.set_defaults(func=cmd_reject)
 
     return parser
 

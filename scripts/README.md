@@ -13,6 +13,8 @@
 | `smoke/unit.sh` | shell 白名单单元冒烟 |
 | `smoke/api.sh` | 绑定工作区 + shell 冒烟（依赖后端已启动） |
 | `smoke/weather.sh` | 调用内置天气工具 |
+
+CLI 审批（不调模型）：在 `backend/` 下 `PYTHONPATH=src python -m pytest tests/test_cli_gates.py tests/test_cli_http_gates.py -q`。依赖 LLM 的手工清单见 `docs/v1-7-headless-cli-design.md` §12。
 | `debug/show-routes.sh` | 打印 routes.py 片段 |
 | `debug/find-api.sh` | 搜索 sessions / SSE 相关代码 |
 

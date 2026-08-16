@@ -31,11 +31,8 @@ class MemoryStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-ACTIONABLE_MEMORY_STATUSES = {
+LISTABLE_MEMORY_STATUSES = {
     MemoryStatus.PENDING,
-    MemoryStatus.FAILED,
-    MemoryStatus.REJECTED,
-    MemoryStatus.TIMEOUT,
 }
 
 
@@ -202,7 +199,7 @@ def list_pending_memories() -> List[Dict[str, Any]]:
     return [
         memory_to_public(m)
         for m in _memories.values()
-        if m.status in ACTIONABLE_MEMORY_STATUSES
+        if m.status in LISTABLE_MEMORY_STATUSES
     ]
 
 

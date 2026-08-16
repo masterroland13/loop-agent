@@ -16,6 +16,7 @@ import { MemoryPanel } from './components/MemoryPanel'
 import { MessageList } from './components/MessageList'
 import { MessageNavigator } from './components/MessageNavigator'
 import { ModelPicker } from './components/ModelPicker'
+import { FALLBACK_MODELS } from './components/modelFallbacks'
 import { SearchPanel } from './components/SearchPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ShellPanel } from './components/ShellPanel'
@@ -185,7 +186,8 @@ function App() {
       .then((res) => {
         const ids = new Set(res.models.map((m) => m.id))
         const saved = loadModel()
-        if (ids.size > 0 && !ids.has(saved)) {
+        const staleFallback = FALLBACK_MODELS.includes(saved)
+        if (ids.size > 0 && !ids.has(saved) && staleFallback) {
           const next = ids.has(res.default) ? res.default : res.models[0].id
           setModelName(next)
           try {
@@ -193,7 +195,7 @@ function App() {
           } catch {
             // ignore
           }
-          showToast(`模型「${saved}」不可用，已切换为 ${next}`)
+          showToast(`模型「${saved}」不在新网关列表，已切换为 ${next}`)
         }
       })
       .catch(() => {

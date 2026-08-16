@@ -328,6 +328,30 @@ export async function updateAgentSettings(
   return response.json()
 }
 
+export interface LlmConfig {
+  api_key_configured: boolean
+  base_url: string
+  default_model: string
+}
+
+export async function fetchLlmConfig(): Promise<LlmConfig> {
+  const response = await apiFetch('/api/llm-config')
+  return response.json()
+}
+
+export async function updateLlmConfig(patch: {
+  api_key?: string
+  base_url?: string
+  default_model?: string
+}): Promise<LlmConfig> {
+  const response = await apiFetch('/api/llm-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return response.json()
+}
+
 export async function listMemoryProposals(): Promise<MemoryProposal[]> {
   const response = await apiFetch('/api/memory/proposals')
   return response.json()

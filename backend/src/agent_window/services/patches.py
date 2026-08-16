@@ -32,11 +32,11 @@ class PatchStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-ACTIONABLE_STATUSES = {
+# Statuses the approval REST list exposes: pending only.
+# FAILED/TIMEOUT/REJECTED history stays in the session message stream;
+# retry there is driven by the UI (patch.retry / shell.retry), not by this list.
+LISTABLE_STATUSES = {
     PatchStatus.PENDING,
-    PatchStatus.FAILED,
-    PatchStatus.REJECTED,
-    PatchStatus.TIMEOUT,
 }
 
 
@@ -264,11 +264,11 @@ def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
 
 
 def list_pending() -> List[Dict[str, Any]]:
-    """Pending + retryable patches for UI restore after refresh/restart."""
+    """Pending patches only (decided history lives in the session stream)."""
     return [
         patch_to_public(p)
         for p in _patches.values()
-        if p.status in ACTIONABLE_STATUSES
+        if p.status in LISTABLE_STATUSES
     ]
 
 

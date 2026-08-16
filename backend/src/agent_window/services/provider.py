@@ -76,11 +76,22 @@ class LLMProvider:
         self.base_url = base_url
         self.client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url) if api_key else None
 
+    def _sync_client(self) -> None:
+        key = str(settings.llm_api_key or "").strip()
+        url = (settings.llm_base_url or "").strip().rstrip("/")
+        if self.client is not None and url == self.base_url and key == self.api_key:
+            return
+        self.base_url = url
+        self.api_key = key
+        self.client = openai.AsyncOpenAI(api_key=key, base_url=url) if key else None
+
     def is_available(self) -> bool:
+        self._sync_client()
         return self.client is not None and bool(self.api_key)
 
     async def list_models(self) -> Dict[str, Any]:
         """Return {models: [{id}], default, source}."""
+        self._sync_client()
         default = settings.llm_model
         if not self.client:
             ids = list(FALLBACK_MODELS)
@@ -124,6 +135,7 @@ class LLMProvider:
         max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Non-streaming completion; returns content + optional tool_calls."""
+        self._sync_client()
         if not self.client:
             raise RuntimeError("LLM provider not configured")
 
@@ -189,7 +201,9 @@ class LLMProvider:
     def _is_tools_schema_error(exc: BaseException) -> bool:
         text = str(exc).lower()
         return "tools.function.parameters" in text or "json schema" in text or "moonshot" in text
+
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[Dict]:
+        self._sync_client()
         if not self.client:
             logger.error("LLM provider not configured")
             yield {

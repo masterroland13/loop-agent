@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react'
 import {
   fetchAssets,
   fetchAudit,
+  fetchLlmConfig,
+  fetchModels,
   fetchSkills,
+  updateLlmConfig,
   type AssetsStatus,
   type AuditEvent,
+  type LlmConfig,
   type SkillInfo,
 } from '../api/agent'
 import type { SettingsState } from '../hooks/useSettings'
@@ -26,6 +30,13 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
   const [skillsError, setSkillsError] = useState<string | null>(null)
   const [skillExpanded, setSkillExpanded] = useState<Record<string, boolean>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null)
+  const [llmKeyDraft, setLlmKeyDraft] = useState('')
+  const [llmUrlDraft, setLlmUrlDraft] = useState('')
+  const [llmModelDraft, setLlmModelDraft] = useState('')
+  const [llmSaving, setLlmSaving] = useState(false)
+  const [llmError, setLlmError] = useState<string | null>(null)
+  const [llmSavedHint, setLlmSavedHint] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isOpen) return
@@ -42,13 +53,18 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
     setLoadError(null)
     setSkillsLoading(true)
     setSkillsError(null)
-    Promise.all([fetchAssets(), fetchAudit(30), fetchSkills()])
-      .then(([a, events, s]) => {
+    Promise.all([fetchAssets(), fetchAudit(30), fetchSkills(), fetchLlmConfig()])
+      .then(([a, events, s, llm]) => {
         if (cancelled) return
         setAssets(a)
         setAudit(events)
         setSkills(s.skills)
         setAgentsMdExists(s.agents_md_exists)
+        setLlmConfig(llm)
+        setLlmUrlDraft(llm.base_url)
+        setLlmModelDraft(llm.default_model)
+        setLlmKeyDraft('')
+        setLlmError(null)
       })
       .catch((err) => {
         if (cancelled) return
@@ -82,6 +98,38 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-5">
+          <Section title="模型服务">
+            <LlmProviderFields
+              config={llmConfig}
+              keyDraft={llmKeyDraft}
+              urlDraft={llmUrlDraft}
+              modelDraft={llmModelDraft}
+              saving={llmSaving}
+              error={llmError}
+              savedHint={llmSavedHint}
+              onKeyDraft={setLlmKeyDraft}
+              onUrlDraft={setLlmUrlDraft}
+              onModelDraft={setLlmModelDraft}
+              onSave={async (patch) => {
+                setLlmSaving(true)
+                setLlmError(null)
+                setLlmSavedHint(null)
+                try {
+                  const next = await updateLlmConfig(patch)
+                  setLlmConfig(next)
+                  setLlmUrlDraft(next.base_url)
+                  setLlmModelDraft(next.default_model)
+                  if (patch.api_key) setLlmKeyDraft('')
+                  setLlmSavedHint('已保存到 backend/.env，立即生效')
+                } catch (err) {
+                  setLlmError(err instanceof Error ? err.message : '保存失败')
+                } finally {
+                  setLlmSaving(false)
+                }
+              }}
+            />
+          </Section>
+
           <Section title="外观">
             <div className="grid grid-cols-3 gap-2">
               <Choice label="深色" active={settings.theme === 'dark'} onClick={() => onChange('theme', 'dark')} />
@@ -315,7 +363,7 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
         </div>
 
         <div className="border-t border-[var(--border-subtle)] px-5 py-3 text-center text-xs text-[var(--text-muted)]">
-          外观存浏览器；Agent 开关同步到后端
+          外观存浏览器；Agent 开关与模型服务覆盖同步到后端
         </div>
       </div>
     </div>
@@ -356,6 +404,161 @@ function Choice({ label, active, onClick }: { label: string; active: boolean; on
     >
       {label}
     </button>
+  )
+}
+
+function LlmProviderFields({
+  config,
+  keyDraft,
+  urlDraft,
+  modelDraft,
+  saving,
+  error,
+  savedHint,
+  onKeyDraft,
+  onUrlDraft,
+  onModelDraft,
+  onSave,
+}: {
+  config: LlmConfig | null
+  keyDraft: string
+  urlDraft: string
+  modelDraft: string
+  saving: boolean
+  error: string | null
+  savedHint: string | null
+  onKeyDraft: (value: string) => void
+  onUrlDraft: (value: string) => void
+  onModelDraft: (value: string) => void
+  onSave: (patch: { api_key?: string; base_url?: string; default_model?: string }) => Promise<void>
+}) {
+  const [models, setModels] = useState<string[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+
+  useEffect(() => {
+    if (!config) return
+    let cancelled = false
+    setModelsLoading(true)
+    fetchModels()
+      .then((res) => {
+        if (cancelled) return
+        setModels(res.models.map((m) => m.id).filter(Boolean))
+      })
+      .catch(() => {
+        if (!cancelled) setModels([])
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // Re-fetch the gateway model list whenever the base URL changes.
+  }, [config?.base_url, config?.api_key_configured])
+
+  if (!config) {
+    return <p className="text-xs text-[var(--text-muted)]">加载中…</p>
+  }
+
+  const dirty =
+    urlDraft.trim() !== config.base_url ||
+    modelDraft.trim() !== config.default_model ||
+    keyDraft.trim().length > 0
+
+  const modelChoices = models.includes(modelDraft)
+    ? models
+    : modelDraft
+      ? [modelDraft, ...models]
+      : models
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm text-[var(--text-h)]">API Key</div>
+          <span className="text-[10px] text-[var(--text-muted)]">
+            {config.api_key_configured ? '已保存（明文不回显）' : '未配置'}
+          </span>
+        </div>
+        <input
+          type="password"
+          autoComplete="off"
+          value={keyDraft}
+          onChange={(e) => onKeyDraft(e.target.value)}
+          placeholder={config.api_key_configured ? '已保存密钥。输入新密钥以替换' : '粘贴 API Key'}
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+        />
+      </div>
+
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
+        <div className="mb-2 text-sm text-[var(--text-h)]">Base URL</div>
+        <input
+          type="url"
+          autoComplete="off"
+          value={urlDraft}
+          onChange={(e) => onUrlDraft(e.target.value)}
+          placeholder="https://api.example.com/v1"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+        />
+        <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+          OpenAI 兼容网关地址（含 /v1）。保存后写入 backend/.env 并立即生效。
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm text-[var(--text-h)]">默认模型</div>
+          {modelsLoading && <span className="text-[10px] text-[var(--text-muted)]">拉取列表…</span>}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {modelChoices.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => onModelDraft(m)}
+              className={[
+                'rounded-full px-3 py-1 text-xs transition-colors',
+                m === modelDraft
+                  ? 'bg-[var(--accent-bg)] text-[var(--text-h)] ring-1 ring-[var(--accent)]'
+                  : 'bg-[var(--bg)] text-[var(--text-muted)] hover:text-[var(--text-h)]',
+              ].join(' ')}
+            >
+              {m}
+            </button>
+          ))}
+          {modelChoices.length === 0 && !modelsLoading && (
+            <span className="text-xs text-[var(--text-muted)]">网关未返回模型列表，可在下方手填。</span>
+          )}
+        </div>
+        <input
+          type="text"
+          autoComplete="off"
+          value={modelDraft}
+          onChange={(e) => onModelDraft(e.target.value)}
+          placeholder="模型 id，例如 deepseek-v4-flash"
+          className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+        />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          disabled={saving || !dirty}
+          onClick={() =>
+            void onSave({
+              base_url: urlDraft.trim(),
+              default_model: modelDraft.trim(),
+              ...(keyDraft.trim() ? { api_key: keyDraft.trim() } : {}),
+            })
+          }
+          className="rounded-md bg-[var(--accent-bg)] px-4 py-1.5 text-sm text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+        {savedHint && <p className="text-xs text-emerald-400">{savedHint}</p>}
+      </div>
+    </div>
   )
 }
 

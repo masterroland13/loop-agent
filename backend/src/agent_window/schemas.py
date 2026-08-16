@@ -127,6 +127,18 @@ class AgentSettingsUpdateRequest(BaseModel):
     active_skills: List[str] | None = None
 
 
+class LlmConfigResponse(BaseModel):
+    api_key_configured: bool
+    base_url: str
+    default_model: str
+
+
+class LlmConfigUpdateRequest(BaseModel):
+    api_key: str | None = Field(default=None, max_length=4096)
+    base_url: str | None = Field(default=None, max_length=2048)
+    default_model: str | None = Field(default=None, max_length=128)
+
+
 class SkillInfo(BaseModel):
     id: str
     name: str

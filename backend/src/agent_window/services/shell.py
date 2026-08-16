@@ -110,11 +110,8 @@ class ShellStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-ACTIONABLE_SHELL_STATUSES = {
+LISTABLE_SHELL_STATUSES = {
     ShellStatus.PENDING,
-    ShellStatus.FAILED,
-    ShellStatus.REJECTED,
-    ShellStatus.TIMEOUT,
 }
 
 
@@ -322,7 +319,7 @@ def list_pending_shells() -> List[Dict[str, Any]]:
     return [
         shell_to_public(s)
         for s in _shells.values()
-        if s.status in ACTIONABLE_SHELL_STATUSES
+        if s.status in LISTABLE_SHELL_STATUSES
     ]
 
 

@@ -305,6 +305,8 @@ async def run_and_wait(session_id, message, timeout=300):
 - `hal ask`、`hal status`、`hal approve`
 - 配置文件 `~/.config/hal-agent/config.json` 保存 `base_url`
 
+**实现状态（2026-08-13）：** `hal status` / `hal approve` / `hal reject` 已落地；不调模型的 HTTP 级测试见 `backend/tests/test_cli_http_gates.py`。依赖上游 LLM 的 Window 狗粮（造 Diff 再 CLI 审批）因 `llm-cn.gameye.ai` 从 WSL 连不上而暂停，清单见 **§12**。
+
 ### Phase 3：流式与等待模式（1-2 天）
 
 - `POST /api/sessions/{id}/run-stream`
@@ -352,3 +354,32 @@ async def run_and_wait(session_id, message, timeout=300):
 - Agent loop：`backend/src/agent_window/agent/loop.py`
 - Patches / shells / memories 服务：`backend/src/agent_window/services/`
 - 审计：`backend/src/agent_window/services/audit.py`
+
+---
+
+## 12. 手工验收（暂停：无可用上游 API）
+
+**阻塞：** WSL 访问 `https://llm-cn.gameye.ai:443` TCP 超时；暂无备用 API Key。没有 `propose_edit` 就无法在真实 Window 里造 pending Diff。
+
+**已不依赖模型、可随时跑：**
+
+```bash
+cd "/home/caapap/agent window/backend"
+source .venv/bin/activate
+PYTHONPATH=src python -m pytest tests/test_cli_gates.py tests/test_cli_http_gates.py -q
+```
+
+**有可用 OpenAI 兼容网关之后再做（Window + 真 LLM）：**
+
+1. 设置 → 模型服务：覆盖 Base URL + 保存 API Key（WSL 里对该 `/v1/models` 的 curl 不能是 `http=000`）。
+2. 重启不是必须（改设置即时生效）；新开会话。
+3. 发：在仓库根创建 `cli-gate-test.txt`，内容一行 `hal-status-ok`，必须 `propose_edit`。出现 Diff 后不要点 Apply。
+4. `hal status` 应看到 `[patch] … path=cli-gate-test.txt`。
+5. `hal approve --patch-id <id>` 后文件落地，`hal status` 不再列出该 **pending** 项。
+6. 再造 `cli-gate-reject.txt`，用 `hal reject --patch-id <id>`；磁盘上无该文件。Window 里 Rejected 卡片仍可见（Batch C）。
+7. `hal approve --no-input` 在仍有待处理项且未带 id 时应退出码 2。
+8. 可选：终端 A `hal ask` 停在 `[y/N]`，终端 B `hal approve --patch-id`。
+
+**不要用** `hal ask --no-input` 造 pending（无 TTY 会直接 reject）。
+
+**未做（有 Key 后再开，不要提前做）：** Phase 3 `hal run --wait`；M1 hunk Apply；换网关以外的新供应商适配。

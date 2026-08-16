@@ -1,14 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchModels } from '../api/agent'
-
-/** Offline fallback — must match gateway aliases (no stale kimi-k2p6). */
-export const FALLBACK_MODELS = [
-  'kimi-k3',
-  'kimi-k3-256k',
-  'kimi-for-coding',
-  'kimi-for-coding-highspeed',
-  'bailian-kimi-k2.7-code',
-]
+import { FALLBACK_MODELS } from './modelFallbacks'
 
 interface ModelPickerProps {
   isOpen: boolean
@@ -22,6 +14,7 @@ export function ModelPicker({ isOpen, current, onClose, onSelect }: ModelPickerP
   const [source, setSource] = useState<string>('fallback')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [customId, setCustomId] = useState('')
 
   useEffect(() => {
     if (!isOpen) return
@@ -50,6 +43,13 @@ export function ModelPicker({ isOpen, current, onClose, onSelect }: ModelPickerP
       cancelled = true
     }
   }, [isOpen])
+
+  const applyCustom = () => {
+    const id = customId.trim()
+    if (!id) return
+    onSelect(id)
+    onClose()
+  }
 
   if (!isOpen) return null
 
@@ -95,11 +95,37 @@ export function ModelPicker({ isOpen, current, onClose, onSelect }: ModelPickerP
               >
                 <span className="font-medium">{model}</span>
                 <span className="text-xs text-[var(--text-dim)]">
-                  {unavailable ? '不可用' : active ? '当前' : ''}
+                  {unavailable ? '列表外' : active ? '当前' : ''}
                 </span>
               </button>
             )
           })}
+        </div>
+        <div className="border-t border-[var(--border-subtle)] px-3 py-3">
+          <p className="mb-1.5 text-[11px] text-[var(--text-muted)]">列表没有时，填写网关中的模型 id</p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={customId}
+              onChange={(e) => setCustomId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  applyCustom()
+                }
+              }}
+              placeholder="例如 deepseek-v4-flash"
+              className="min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+            />
+            <button
+              type="button"
+              onClick={applyCustom}
+              disabled={!customId.trim()}
+              className="shrink-0 rounded-lg bg-[var(--accent-bg)] px-3 py-2 text-sm text-[var(--text-h)] disabled:opacity-40"
+            >
+              使用
+            </button>
+          </div>
         </div>
       </div>
     </div>

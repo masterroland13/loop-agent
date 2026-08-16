@@ -21,6 +21,8 @@ from agent_window.schemas import (
     FavoriteItemResponse,
     FavoriteToggleRequest,
     HealthResponse,
+    LlmConfigResponse,
+    LlmConfigUpdateRequest,
     MemoryProposalResponse,
     MessageRequest,
     MessageResponse,
@@ -40,6 +42,7 @@ from agent_window.schemas import (
 )
 from agent_window.agent.loop import run_agent_loop
 from agent_window.services.agent_settings import load_agent_settings, save_agent_settings
+from agent_window.services.llm_config import public_llm_config, save_llm_config
 from agent_window.services.audit import audit_to_public, emit_audit, list_audit_events
 from agent_window.services.compress import approx_messages_tokens, approx_tokens, compress_messages_if_needed
 from agent_window.services.memory import (
@@ -220,6 +223,31 @@ def put_settings_endpoint(request: AgentSettingsUpdateRequest, db: Session = Dep
     updated = save_agent_settings(request.model_dump(exclude_unset=True))
     emit_audit(db, "settings.update", payload=updated)
     return AgentSettingsResponse(**updated)
+
+
+@router.get("/api/llm-config", response_model=LlmConfigResponse)
+def get_llm_config_endpoint():
+    return LlmConfigResponse(**public_llm_config())
+
+
+@router.put("/api/llm-config", response_model=LlmConfigResponse)
+def put_llm_config_endpoint(request: LlmConfigUpdateRequest, db: Session = Depends(get_db)):
+    payload = request.model_dump(exclude_unset=True)
+    try:
+        saved = save_llm_config(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_LLM_CONFIG", "message": str(e)}) from e
+    emit_audit(
+        db,
+        "llm.config",
+        payload={
+            "base_url": saved["base_url"],
+            "default_model": saved["default_model"],
+            "api_key_updated": "api_key" in payload and bool(payload["api_key"]),
+        },
+    )
+    provider._sync_client()
+    return LlmConfigResponse(**saved)
 
 
 @router.get("/api/skills", response_model=SkillsResponse)
