@@ -10,7 +10,9 @@ import pytest
 from agent_window.cli.main import (
     _explicit_targets,
     _print_status,
+    _resolve_prompt,
     _status_payload,
+    _wait_pending,
     build_parser,
     cmd_approve,
     cmd_reject,
@@ -128,3 +130,37 @@ def test_cmd_status_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert cmd_status(client, args) == 0
     out = capsys.readouterr().out
     assert '"awaiting_approval": false' in out
+
+
+def test_parser_run_has_wait_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["run", "--wait", "--wait-timeout", "60", "-s", "sid", "do it"])
+    assert args.wait is True
+    assert args.wait_timeout == 60.0
+    assert args.session == "sid"
+
+
+def test_wait_pending_clears_immediately() -> None:
+    client = FakeClient()
+    assert _wait_pending(client, 5.0) == 0
+
+
+def test_wait_pending_times_out() -> None:
+    client = FakeClient(patches=[{"id": "p1", "path": "x.txt", "status": "pending"}])
+    assert _wait_pending(client, 0.1) == 3
+
+
+def test_resolve_prompt_from_file(tmp_path) -> None:
+    f = tmp_path / "task.md"
+    f.write_text("refactor utils", encoding="utf-8")
+    args = SimpleNamespace(prompt="", file=str(f))
+    assert _resolve_prompt(args) == "refactor utils"
+
+
+def test_resolve_prompt_combines_file(tmp_path) -> None:
+    f = tmp_path / "extra.md"
+    f.write_text("details here", encoding="utf-8")
+    args = SimpleNamespace(prompt="do this", file=str(f))
+    result = _resolve_prompt(args)
+    assert "do this" in result
+    assert "details here" in result

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from typing import Any, Dict, List, Optional, TextIO
 
 from agent_window.cli.client import ApiError, RuntimeClient
@@ -313,6 +314,22 @@ def _handle_approval(client: RuntimeClient, event: Dict[str, Any], args: argpars
         _eprint(f"\n[approval] unknown kind={kind}: {event}")
 
 
+def _has_pending(client: RuntimeClient) -> bool:
+    pending = _fetch_pending(client)
+    return bool(pending["patches"] or pending["shells"] or pending["memories"])
+
+
+def _wait_pending(client: RuntimeClient, timeout_sec: float) -> int:
+    """Poll until all pending approvals clear or timeout. Returns exit code."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if not _has_pending(client):
+            return 0
+        time.sleep(1.5)
+    _eprint(f"等待审批超时（{timeout_sec:.0f}s）")
+    return 3
+
+
 def _stream_turn(
     client: RuntimeClient,
     session_id: str,
@@ -409,7 +426,7 @@ def _stream_turn(
     return exit_code
 
 
-def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
+def _resolve_prompt(args: argparse.Namespace) -> str:
     prompt = args.prompt
     if args.file:
         with open(args.file, encoding="utf-8") as f:
@@ -417,6 +434,11 @@ def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
         prompt = f"{prompt}\n\n{file_text}".strip() if prompt else file_text.strip()
     if not prompt and not sys.stdin.isatty():
         prompt = sys.stdin.read().strip()
+    return prompt
+
+
+def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
+    prompt = _resolve_prompt(args)
     if not prompt:
         _eprint("empty prompt: pass text, --file, or stdin")
         return 2
@@ -449,8 +471,45 @@ def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
 
 
 def cmd_run(client: RuntimeClient, args: argparse.Namespace) -> int:
-    """Alias for ask — reserved for future task-oriented runs."""
-    return cmd_ask(client, args)
+    """Task-oriented run: stream the reply, optionally wait for approvals."""
+    prompt = _resolve_prompt(args)
+    if not prompt:
+        _eprint("empty prompt: pass text, --file, or stdin")
+        return 2
+
+    session_id = args.session
+    if not session_id:
+        title = (prompt[:40] + "…") if len(prompt) > 40 else prompt
+        title = title.replace("\n", " ").strip() or "CLI"
+        created = client.post("/api/sessions", {"title": f"cli: {title}"})
+        session_id = created["id"]
+        _eprint(f"[session] {session_id}")
+
+    code = _stream_turn(
+        client,
+        session_id,
+        content=prompt,
+        model=args.model,
+        regenerate=False,
+        args=args,
+        out=sys.stdout,
+    )
+    if code != 0:
+        return code
+
+    if not args.wait:
+        try:
+            if _has_pending(client):
+                _eprint("仍有待审批，查看: hal status")
+                _eprint("批准: hal approve --patch-id|--shell-id|--memory-id <id>")
+        except ApiError:
+            pass
+        return 0
+
+    # --wait: block until pending approvals are resolved elsewhere.
+    timeout = args.wait_timeout if args.wait_timeout is not None else 300.0
+    _eprint(f"[wait] 等待审批完成（上限 {timeout:.0f}s）…")
+    return _wait_pending(client, timeout)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -521,8 +580,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_ask_flags(p_ask)
     p_ask.set_defaults(func=cmd_ask)
 
-    p_run = sub.add_parser("run", help="Same as ask (task-oriented alias)")
+    p_run = sub.add_parser("run", help="Run a task, optionally waiting for approvals")
     add_ask_flags(p_run)
+    p_run.add_argument(
+        "--wait",
+        action="store_true",
+        help="Block until pending approvals are resolved (default timeout 300s)",
+    )
+    p_run.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=None,
+        help="Max seconds to wait for approvals (default 300)",
+    )
     p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="Show pending patch/shell/memory approvals")
