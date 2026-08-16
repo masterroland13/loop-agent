@@ -18,8 +18,10 @@ export interface PendingPatch {
   path: string
   unified_diff: string
   is_new_file: boolean
-  status: 'pending' | 'applied' | 'rejected' | 'timeout' | 'failed' | 'cancelled'
+  status: 'pending' | 'applied' | 'rejected' | 'timeout' | 'failed' | 'cancelled' | 'partial'
   error?: string
+  hunk_count?: number
+  applied_hunks?: number[]
 }
 
 export interface PendingShell {

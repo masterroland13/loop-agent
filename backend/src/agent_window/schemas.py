@@ -98,6 +98,12 @@ class PatchResponse(BaseModel):
     is_new_file: bool
     status: str
     error: str | None = None
+    hunk_count: int | None = None
+    applied_hunks: list[int] | None = None
+
+
+class ApplyPartialRequest(BaseModel):
+    hunk_ids: list[int] = Field(..., min_length=1)
 
 
 class ShellResponse(BaseModel):

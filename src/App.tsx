@@ -107,6 +107,7 @@ function App() {
     stopStreaming,
     setFavorite,
     applyPendingPatch,
+    applyPartialPatch,
     rejectPendingPatch,
     retryPendingPatch,
     applyPendingShell,
@@ -496,6 +497,7 @@ function App() {
                   busyId={patchBusyId}
                   onApply={applyPendingPatch}
                   onReject={rejectPendingPatch}
+                  onApplyPartial={applyPartialPatch}
                   onRetry={retryPendingPatch}
                 />
                 <ShellPanel
@@ -547,6 +549,7 @@ function App() {
                 busyId={patchBusyId}
                 onApply={applyPendingPatch}
                 onReject={rejectPendingPatch}
+                onApplyPartial={applyPartialPatch}
                 onRetry={retryPendingPatch}
               />
               <ShellPanel

@@ -257,6 +257,8 @@ export interface PatchResponse {
   is_new_file: boolean
   status: string
   error?: string | null
+  hunk_count?: number | null
+  applied_hunks?: number[] | null
 }
 
 export async function listPatches(): Promise<PatchResponse[]> {
@@ -266,6 +268,15 @@ export async function listPatches(): Promise<PatchResponse[]> {
 
 export async function applyPatch(patchId: string): Promise<PatchResponse> {
   const response = await apiFetch(`/api/workspace/patches/${patchId}/apply`, { method: 'POST' })
+  return response.json()
+}
+
+export async function applyPatchPartial(patchId: string, hunkIds: number[]): Promise<PatchResponse> {
+  const response = await apiFetch(`/api/workspace/patches/${patchId}/apply-partial`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hunk_ids: hunkIds }),
+  })
   return response.json()
 }
 

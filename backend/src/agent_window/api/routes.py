@@ -17,6 +17,7 @@ from agent_window.schemas import (
     AssetsResponse,
     AuditEmitRequest,
     AuditEventResponse,
+    ApplyPartialRequest,
     CreateSessionRequest,
     FavoriteItemResponse,
     FavoriteToggleRequest,
@@ -52,7 +53,7 @@ from agent_window.services.memory import (
     memory_to_public,
     read_user_md,
 )
-from agent_window.services.patches import decide_patch, list_pending, patch_to_public, retry_patch
+from agent_window.services.patches import apply_partial_patch, decide_patch, list_pending, patch_to_public, retry_patch
 from agent_window.services.provider import provider
 from agent_window.services.session_turns import (
     SessionBusyError,
@@ -394,6 +395,27 @@ async def apply_patch_endpoint(patch_id: str, db: Session = Depends(get_db)):
             "patch_id": patch_id,
             "status": patch.status.value,
             "path": patch.path,
+            "error": patch.error,
+        },
+    )
+    return PatchResponse(**patch_to_public(patch))
+
+
+@router.post("/api/workspace/patches/{patch_id}/apply-partial", response_model=PatchResponse)
+async def apply_partial_patch_endpoint(patch_id: str, request: ApplyPartialRequest, db: Session = Depends(get_db)):
+    try:
+        patch = await apply_partial_patch(patch_id, request.hunk_ids)
+    except WorkspaceError as e:
+        status = 404 if e.code == "NOT_FOUND" else 400
+        raise HTTPException(status_code=status, detail={"code": e.code, "message": str(e)}) from e
+    emit_audit(
+        db,
+        "patch.apply_partial",
+        payload={
+            "patch_id": patch_id,
+            "status": patch.status.value,
+            "path": patch.path,
+            "applied_hunks": patch.applied_hunks,
             "error": patch.error,
         },
     )

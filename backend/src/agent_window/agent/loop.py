@@ -52,7 +52,7 @@ _UNVERIFIED_WRITE_NOTE = (
 
 # After an approval gate, these statuses must NOT trigger another free-form LLM turn.
 _GATE_STOP_STATUSES = frozenset({"cancelled"})
-_GATE_TEMPLATE_STATUSES = frozenset({"rejected", "timeout", "failed"})
+_GATE_TEMPLATE_STATUSES = frozenset({"rejected", "timeout", "failed", "partial"})
 _GATE_SUCCESS_STATUSES = frozenset({"applied", "done"})
 _GATE_TOOL_NAMES = frozenset({"propose_edit", "propose_shell", "propose_memory"})
 
@@ -62,6 +62,12 @@ def _gate_user_message(kind: str, parsed: Dict[str, Any]) -> str:
     status = str(parsed.get("status") or "")
     if kind == "patch":
         path = parsed.get("path") or "该文件"
+        if status == "partial":
+            applied = parsed.get("applied_hunks") or []
+            return (
+                f"已部分应用 `{path}`：写入 {len(applied)} 个选中块，其余改动未写入。"
+                "需要剩余改动请直接说「把剩下的也改了」。"
+            )
         if status == "rejected":
             return (
                 f"已拒绝修改 `{path}`，未写入磁盘。"
@@ -167,6 +173,18 @@ async def _handle_patch_gate(
 
     if status == PatchStatus.APPLIED:
         result = {"status": "applied", "patch_id": patch_id, "path": decided.path}
+    elif status == PatchStatus.PARTIAL:
+        result = {
+            "status": "partial",
+            "patch_id": patch_id,
+            "path": decided.path,
+            "applied_hunks": decided.applied_hunks or [],
+            "message": (
+                "User applied only the selected hunks; the rest of this edit was skipped. "
+                "Do not claim the full edit was written. If the user asks for the remaining "
+                "changes, call propose_edit again with just those changes."
+            ),
+        }
     elif status == PatchStatus.REJECTED:
         result = {
             "status": "rejected",

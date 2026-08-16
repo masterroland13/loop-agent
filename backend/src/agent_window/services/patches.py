@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -30,6 +31,7 @@ class PatchStatus(str, Enum):
     TIMEOUT = "timeout"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PARTIAL = "partial"
 
 
 # Statuses the approval REST list exposes: pending only.
@@ -38,6 +40,18 @@ class PatchStatus(str, Enum):
 LISTABLE_STATUSES = {
     PatchStatus.PENDING,
 }
+
+
+@dataclass
+class HunkInfo:
+    """One @@ block from a unified diff."""
+    index: int
+    header: str  # e.g. "@@ -3,4 +3,5 @@"
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    lines: List[str]  # context/+/− lines belonging to this hunk
 
 
 @dataclass
@@ -53,6 +67,7 @@ class PendingPatch:
     created_at: float = field(default_factory=time.time)
     event: asyncio.Event = field(default_factory=asyncio.Event)
     decision: Optional[str] = None  # apply | reject | timeout | cancelled
+    applied_hunks: Optional[List[int]] = None  # set after partial apply
 
 
 _patches: Dict[str, PendingPatch] = {}
@@ -253,7 +268,7 @@ def get_patch(patch_id: str) -> Optional[PendingPatch]:
 
 
 def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
-    return {
+    result: Dict[str, Any] = {
         "id": patch.id,
         "path": patch.path,
         "unified_diff": patch.unified_diff,
@@ -261,6 +276,12 @@ def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
         "status": patch.status.value,
         "error": patch.error,
     }
+    if patch.applied_hunks is not None:
+        result["applied_hunks"] = patch.applied_hunks
+    # Include parsed hunk count so the frontend can render checkboxes
+    if patch.status == PatchStatus.PENDING:
+        result["hunk_count"] = len(parse_hunks(patch.unified_diff))
+    return result
 
 
 def list_pending() -> List[Dict[str, Any]]:
@@ -303,6 +324,130 @@ def apply_patch_to_disk(patch: PendingPatch) -> None:
             raise WorkspaceError("file changed on disk since proposal; abort", "CONFLICT")
 
     target.write_text(patch.new_content, encoding="utf-8")
+
+
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def parse_hunks(unified_diff: str) -> List[HunkInfo]:
+    """Split a unified diff into hunks by @@ headers."""
+    lines = unified_diff.splitlines()
+    hunks: List[HunkInfo] = []
+    current: Optional[HunkInfo] = None
+    hunk_idx = 0
+    for line in lines:
+        m = _HUNK_RE.match(line)
+        if m:
+            current = HunkInfo(
+                index=hunk_idx,
+                header=line,
+                old_start=int(m.group(1)),
+                old_count=int(m.group(2) or "1"),
+                new_start=int(m.group(3)),
+                new_count=int(m.group(4) or "1"),
+                lines=[],
+            )
+            hunks.append(current)
+            hunk_idx += 1
+            continue
+        if current is not None:
+            current.lines.append(line)
+    return hunks
+
+
+def apply_hunks_to_content(old_content: str, hunks: List[HunkInfo], selected: set[int]) -> str:
+    """Apply only the selected hunks to old_content. Returns the merged result.
+
+    Hunks are applied in order; each hunk's old_start/old_count refer to
+    positions in the *original* old_content, so we track an offset as we go.
+    """
+    old_lines = old_content.splitlines(keepends=True)
+    result: List[str] = []
+    cursor = 0  # line index into old_lines
+
+    for hunk in hunks:
+        # Copy unchanged lines before this hunk
+        hunk_old_start = hunk.old_start - 1  # 0-based
+        result.extend(old_lines[cursor:hunk_old_start])
+        cursor = hunk_old_start
+
+        if hunk.index in selected:
+            # Apply: emit the + and context lines, skip the - lines
+            for line in hunk.lines:
+                if line.startswith("-"):
+                    cursor += 1  # consume from old
+                elif line.startswith("+"):
+                    result.append(line[1:] + "\n")
+                else:
+                    # context line
+                    result.append(old_lines[cursor] if cursor < len(old_lines) else line[1:] + "\n")
+                    cursor += 1
+        else:
+            # Skip: consume the old lines this hunk covers, emit nothing new
+            for line in hunk.lines:
+                if line.startswith("-") or (not line.startswith("+")):
+                    if cursor < len(old_lines):
+                        result.append(old_lines[cursor])
+                        cursor += 1
+
+    # Remaining unchanged lines after the last hunk
+    result.extend(old_lines[cursor:])
+    return "".join(result)
+
+
+async def apply_partial_patch(patch_id: str, hunk_ids: List[int]) -> PendingPatch:
+    """Apply only the selected hunks. Wakes waiter."""
+    patch = _patches.get(patch_id)
+    if not patch:
+        raise WorkspaceError("patch not found", "NOT_FOUND")
+    if patch.status != PatchStatus.PENDING:
+        raise WorkspaceError(f"patch already {patch.status.value}", "ALREADY_DECIDED")
+
+    hunks = parse_hunks(patch.unified_diff)
+    if not hunks:
+        raise WorkspaceError("no hunks in diff", "NO_HUNKS")
+    selected = set(hunk_ids)
+    if not selected:
+        raise WorkspaceError("no hunks selected", "EMPTY_SELECTION")
+    if selected == set(range(len(hunks))):
+        # All selected — same as full apply
+        try:
+            apply_patch_to_disk(patch)
+            patch.status = PatchStatus.APPLIED
+            patch.error = None
+            patch.applied_hunks = sorted(selected)
+        except Exception as e:
+            patch.status = PatchStatus.FAILED
+            patch.error = str(e)
+        patch.decision = "apply"
+        patch.event.set()
+        _save_patches()
+        return patch
+
+    try:
+        merged = apply_hunks_to_content(patch.old_content, hunks, selected)
+        target = resolve_in_workspace(patch.path)
+        if patch.is_new_file:
+            if target.exists():
+                raise WorkspaceError("file was created meanwhile; abort", "CONFLICT")
+            target.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            if not target.exists():
+                raise WorkspaceError("file disappeared; abort", "CONFLICT")
+            current = target.read_text(encoding="utf-8", errors="replace")
+            if current != patch.old_content:
+                raise WorkspaceError("file changed on disk since proposal; abort", "CONFLICT")
+        target.write_text(merged, encoding="utf-8")
+        patch.status = PatchStatus.PARTIAL
+        patch.applied_hunks = sorted(selected)
+        patch.error = None
+    except Exception as e:
+        patch.status = PatchStatus.FAILED
+        patch.error = str(e)
+    patch.decision = "apply"
+    patch.event.set()
+    _save_patches()
+    return patch
 
 
 async def decide_patch(patch_id: str, decision: str) -> PendingPatch:

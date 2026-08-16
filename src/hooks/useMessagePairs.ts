@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   applyMemory,
   applyPatch,
+  applyPatchPartial,
   applyShell,
   cancelSession,
   getMessages,
@@ -402,10 +403,37 @@ export function useMessagePairs(
           is_new_file: result.is_new_file,
           status: result.status as PendingPatch['status'],
           error: result.error || undefined,
+          hunk_count: result.hunk_count ?? undefined,
+          applied_hunks: result.applied_hunks ?? undefined,
         })
         setAwaitingApproval(false)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Apply 失败')
+      } finally {
+        setPatchBusyId(null)
+      }
+    },
+    [upsertPatch],
+  )
+
+  const handleApplyPartial = useCallback(
+    async (id: string, hunkIds: number[]) => {
+      setPatchBusyId(id)
+      try {
+        const result = await applyPatchPartial(id, hunkIds)
+        upsertPatch({
+          id: result.id,
+          path: result.path,
+          unified_diff: result.unified_diff,
+          is_new_file: result.is_new_file,
+          status: result.status as PendingPatch['status'],
+          error: result.error || undefined,
+          hunk_count: result.hunk_count ?? undefined,
+          applied_hunks: result.applied_hunks ?? undefined,
+        })
+        setAwaitingApproval(false)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '部分应用失败')
       } finally {
         setPatchBusyId(null)
       }
@@ -1013,6 +1041,7 @@ export function useMessagePairs(
     stopStreaming,
     setFavorite,
     applyPendingPatch: handleApplyPatch,
+    applyPartialPatch: handleApplyPartial,
     rejectPendingPatch: handleRejectPatch,
     retryPendingPatch: handleRetryPatch,
     applyPendingShell: handleApplyShell,
