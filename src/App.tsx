@@ -125,6 +125,14 @@ function App() {
   const [providerAvailable, setProviderAvailable] = useState<boolean | null>(null)
   const [pendingFavoriteId, setPendingFavoriteId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const approvalAreaRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to approval cards when they appear
+  useEffect(() => {
+    if (awaitingApproval && approvalAreaRef.current) {
+      approvalAreaRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [awaitingApproval])
 
   const visibleSessions = useMemo(
     () => filterSessionsByWorkspace(sessions),
@@ -543,7 +551,7 @@ function App() {
               setItemRef={setItemRef}
             />
 
-            <div className="shrink-0 px-6 pb-4 pt-2">
+            <div className="shrink-0 px-6 pb-4 pt-2" ref={approvalAreaRef}>
               <DiffPanel
                 patches={pendingPatches}
                 busyId={patchBusyId}

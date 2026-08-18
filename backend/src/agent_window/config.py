@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.7
 
+    approval_timeout_sec: int = 300
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

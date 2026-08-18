@@ -37,6 +37,30 @@ def humanize_provider_error(exc: BaseException) -> str:
     """Map common LiteLLM/OpenAI errors to short Chinese hints."""
     text = str(exc)
     lower = text.lower()
+
+    # Connection-level failures (DNS, TCP, TLS)
+    if "connecttimeout" in lower.replace(" ", "") or "connect timeout" in lower:
+        return "无法连接到 LLM 网关（连接超时）。请检查网络或更换 Base URL。"
+    if "connection refused" in lower or "name or service not known" in lower or "nodename nor servname" in lower:
+        return "无法连接到 LLM 网关（地址不可达）。请检查 Base URL 是否正确。"
+    if "ssl" in lower and ("certificate" in lower or "handshake" in lower):
+        return "LLM 网关 SSL 证书验证失败。请检查 Base URL 或网络代理。"
+
+    # HTTP status codes
+    if "401" in text or "invalid api key" in lower or "authentication" in lower or "unauthorized" in lower:
+        return "LLM 鉴权失败，请检查 API Key 是否正确。"
+    if "403" in text or "forbidden" in lower or "permission" in lower:
+        return "LLM 权限不足（403）。请检查 API Key 权限或账户状态。"
+    if "404" in text and "model" in lower:
+        return "请求的模型不存在（404）。请在设置中检查模型 id。"
+    if "429" in text or "rate limit" in lower or "too many" in lower:
+        return "请求过于频繁（429），请稍后再试。"
+    if "500" in text or "internal server" in lower:
+        return "LLM 网关内部错误（500），请稍后重试。"
+    if "502" in text or "bad gateway" in lower or "503" in text or "service unavailable" in lower:
+        return "LLM 网关暂时不可用（502/503），请稍后重试。"
+
+    # Model-level errors
     if "invalid model name" in lower or "model_not_found" in lower:
         model_hint = ""
         for token in text.replace("=", " ").replace("'", " ").replace('"', " ").split():
@@ -47,7 +71,7 @@ def humanize_provider_error(exc: BaseException) -> str:
                 or token.startswith("openrouter")
                 or token.startswith("deepseek")
             ):
-                model_hint = token.rstrip(".,;")
+                model_hint = token.rstrip(".,")
                 break
         if model_hint:
             return (
@@ -55,12 +79,15 @@ def humanize_provider_error(exc: BaseException) -> str:
                 "请在模型列表中另选一个再试。"
             )
         return "当前模型不可用（网关未配置该别名）。请换一个模型再试。"
-    if "401" in text or "invalid api key" in lower or "authentication" in lower:
-        return "LLM 鉴权失败，请检查后端 LLM_API_KEY。"
-    if "429" in text or "rate limit" in lower:
-        return "请求过于频繁，请稍后再试。"
+
+    # Timeout (read/write, not connect)
     if "timeout" in lower or "timed out" in lower:
-        return "上游模型超时，请重试。"
+        return "上游模型响应超时，请重试。"
+
+    # Context/token limits
+    if "context_length" in lower or "maximum context" in lower or "too many tokens" in lower:
+        return "对话上下文超出模型限制。请新开一个会话重试。"
+
     return text
 
 

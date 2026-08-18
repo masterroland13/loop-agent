@@ -18,7 +18,7 @@ from agent_window.services.workspace import WorkspaceError
 
 logger = logging.getLogger(__name__)
 
-APPROVAL_TIMEOUT_SEC = 300
+APPROVAL_TIMEOUT_SEC = settings.approval_timeout_sec
 MAX_MEMORY_CHARS = 20_000
 
 

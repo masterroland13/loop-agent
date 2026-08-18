@@ -19,7 +19,7 @@ from agent_window.services.workspace import WorkspaceError, require_root, resolv
 
 logger = logging.getLogger(__name__)
 
-APPROVAL_TIMEOUT_SEC = 300
+APPROVAL_TIMEOUT_SEC = settings.approval_timeout_sec
 CMD_TIMEOUT_SEC = 60
 MAX_OUTPUT_BYTES = 32_000
 

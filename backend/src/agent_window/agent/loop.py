@@ -28,14 +28,18 @@ _WRITE_CLAIM_RE = re.compile(
     r"("
     # Claim that THIS turn wrote to disk (avoid matching「刚才已创建」「已经存在」)
     r"已(经)?(成功)?(写入|保存到|写到)(磁盘|文件)?|"
-    r"(?<!才)已创建(文件|目录)|"
-    r"(?<!才)已保存(文件|目录)|"
-    r"已成功(创建|修改|更新)|"
+    r"(?<!才)已创建(文件|目录)?|"
+    r"(?<!才)已保存(文件|目录)?|"
+    r"(?<!才)新建(了)?(文件|目录|测试)?|"
+    r"(?<!才)创建(了)?(文件|目录|测试)(?!前)|"
+    r"已成功(创建|修改|更新|运行|执行)|"
     r"(修改|编辑|提案)已应用|已应用到磁盘|写入磁盘成功|"
     r"当前状态：\s*已应用|"
-    r"successfully\s+(wrote|saved|applied)\b|"
-    r"(file|files)\s+(has|have|was|were)\s+(been\s+)?(written|saved|applied)\b|"
-    r"I\s+(have\s+)?(written|saved|applied)\s+"
+    r"测试(全部)?通过|验证通过|"
+    r"\d+\s*passed\b|"
+    r"successfully\s+(wrote|saved|applied|created|ran)\b|"
+    r"(file|files)\s+(has|have|was|were)\s+(been\s+)?(written|saved|applied|created)\b|"
+    r"I\s+(have\s+)?(written|saved|applied|created|ran)\s+"
     r")",
     re.IGNORECASE,
 )
@@ -46,8 +50,8 @@ _TOOLS_DISABLED_NOTE = (
 )
 
 _UNVERIFIED_WRITE_NOTE = (
-    "⚠️ 本轮未通过 propose_edit 审批写入磁盘；上述写盘结论可能不实。"
-    "如需改文件，请明确要求并等待 Diff 面板 Apply。"
+    "⚠️ 本轮未通过 propose_edit / propose_shell 审批执行；上述写盘/运行结论可能不实。"
+    "如需改文件或跑命令，请明确要求并等待审批卡片。"
 )
 
 # After an approval gate, these statuses must NOT trigger another free-form LLM turn.
@@ -396,6 +400,7 @@ async def run_agent_loop(
     tools = registry.get_openai_tools()
     working = list(messages)
     write_gate_seen = False
+    shell_gate_seen = False
 
     for _ in range(MAX_TOOL_ITERS):
         if cancel_event is not None and cancel_event.is_set():
@@ -477,6 +482,7 @@ async def run_agent_loop(
                             else:
                                 yield event
                 elif parsed and parsed.get(AWAIT_SHELL_KEY):
+                    shell_gate_seen = True
                     if not parsed.get("shell"):
                         result = json.dumps(
                             {"status": "failed", "error": "propose_shell missing shell payload"},
@@ -583,7 +589,7 @@ async def run_agent_loop(
                     content,
                     "⚠️ 本轮工具调用不可用，无法改文件或执行命令；请换支持工具的模型。",
                 )
-        elif content and _looks_like_write_claim(content) and not write_gate_seen:
+        elif content and _looks_like_write_claim(content) and not write_gate_seen and not shell_gate_seen:
             content = _append_note(content, _UNVERIFIED_WRITE_NOTE)
 
         if not content:

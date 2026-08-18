@@ -21,7 +21,7 @@ from agent_window.services.workspace import WorkspaceError, require_root, resolv
 logger = logging.getLogger(__name__)
 
 MAX_EDIT_BYTES = 200_000
-APPROVAL_TIMEOUT_SEC = 300
+APPROVAL_TIMEOUT_SEC = settings.approval_timeout_sec
 
 
 class PatchStatus(str, Enum):
