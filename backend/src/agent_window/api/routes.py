@@ -95,11 +95,30 @@ from agent_window.tools.registry import registry
 router = APIRouter()
 
 
+def _load_prompt_file(workspace_root: str, filename: str) -> str:
+    """Read a prompt file from workspace root. Returns empty string if not found."""
+    from pathlib import Path
+
+    path = Path(workspace_root) / filename
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def _system_prompt() -> str:
     import agent_window.tools  # noqa: F401
 
     tool_names = ", ".join(registry.list_names()) or "(none)"
     ws_root = get_workspace_root()
+    ws_root_str = str(ws_root) if ws_root else ""
+
+    # SYSTEM.md replaces the entire system prompt; APPEND_SYSTEM.md appends.
+    system_override = _load_prompt_file(ws_root_str, "SYSTEM.md") if ws_root_str else ""
+    system_append = _load_prompt_file(ws_root_str, "APPEND_SYSTEM.md") if ws_root_str else ""
+
     if ws_root:
         workspace_hint = (
             f"Workspace root is bound to: {ws_root}. "
@@ -138,18 +157,24 @@ def _system_prompt() -> str:
     if skill_blocks:
         skills_section = "\n\n" + "\n\n".join(skill_blocks)
 
-    return (
-        "You are a helpful coding assistant. Answer concisely in Chinese unless the user asks otherwise. "
-        "When providing code, use Markdown code blocks with the language identifier. "
-        f"You have tools available: {tool_names}. "
-        f"{workspace_hint} "
-        "When the user asks about weather, call get_weather. "
-        "Do not invent tool results — always call the tool. "
-        "When the user asks you to create, edit, or run something in the workspace, "
-        "you MUST call the matching tool (propose_edit, propose_shell) instead of describing the action."
-        f"{memory_block}"
-        f"{skills_section}"
-    )
+    if system_override:
+        base = system_override
+    else:
+        base = (
+            "You are a helpful coding assistant. Answer concisely in Chinese unless the user asks otherwise. "
+            "When providing code, use Markdown code blocks with the language identifier. "
+            f"You have tools available: {tool_names}. "
+            f"{workspace_hint} "
+            "When the user asks about weather, call get_weather. "
+            "Do not invent tool results — always call the tool. "
+            "When the user asks you to create, edit, or run something in the workspace, "
+            "you MUST call the matching tool (propose_edit, propose_shell) instead of describing the action."
+        )
+
+    if system_append:
+        base = base.rstrip() + "\n\n" + system_append
+
+    return f"{base}{memory_block}{skills_section}"
 
 
 def _sse_headers():
