@@ -4,7 +4,11 @@ Skills live under `skills/<skill_id>/`:
   - Prefer `SKILL.md` (optional YAML frontmatter: name, description, …)
   - Fallback to `README.md` for older layouts
 
-Project rules are read from `AGENTS.md` in the workspace root.
+Project rules are read from `AGENTS.md` files, layered:
+  1. Global: `~/.config/hal-agent/AGENTS.md`
+  2. Parent directories of workspace root (upward walk)
+  3. Workspace root `AGENTS.md` (most specific, wins on conflict)
+
 Settings persist the list of active skill ids in agent_settings.json.
 """
 
@@ -29,10 +33,49 @@ def skill_dir() -> Path | None:
 
 
 def agents_md_path() -> Path | None:
+    """Return the workspace-root AGENTS.md path (most specific layer)."""
     root = get_workspace_root()
     if not root:
         return None
     return Path(root) / "AGENTS.md"
+
+
+def agents_md_paths() -> List[Path]:
+    """Return AGENTS.md paths from global to most specific.
+
+    Order: global ~/.config/hal-agent/AGENTS.md → parent dirs → workspace root.
+    Only includes paths that exist.
+    """
+    paths: List[Path] = []
+
+    # Global layer
+    global_path = Path.home() / ".config" / "hal-agent" / "AGENTS.md"
+    if global_path.is_file():
+        paths.append(global_path)
+
+    root = get_workspace_root()
+    if not root:
+        return paths
+
+    root = Path(root).resolve()
+
+    # Parent directories (from top-level down to workspace root)
+    parents: List[Path] = []
+    current = root.parent
+    while current != current.parent:
+        candidate = current / "AGENTS.md"
+        if candidate.is_file():
+            parents.append(candidate)
+        current = current.parent
+    parents.reverse()  # top-down: most general first
+    paths.extend(parents)
+
+    # Workspace root (most specific)
+    root_path = root / "AGENTS.md"
+    if root_path.is_file():
+        paths.append(root_path)
+
+    return paths
 
 
 def _parse_frontmatter(text: str) -> Tuple[Dict[str, str], str]:
@@ -137,13 +180,25 @@ def read_skill(skill_id: str) -> str:
 
 
 def read_agents_md() -> str:
-    path = agents_md_path()
-    if not path or not path.exists():
+    """Read and merge all AGENTS.md layers. Later (more specific) layers override."""
+    paths = agents_md_paths()
+    if not paths:
         return ""
-    try:
-        return path.read_text(encoding="utf-8").strip()[:MAX_SKILL_CHARS]
-    except Exception:
-        return ""
+    parts: List[str] = []
+    for p in paths:
+        try:
+            text = p.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        # Label the source so the model knows which layer this came from
+        if p == (get_workspace_root() or Path()) / "AGENTS.md":
+            parts.append(text)
+        else:
+            parts.append(f"[from {p.parent}]\n{text}")
+    combined = "\n\n".join(parts)
+    return combined[:MAX_SKILL_CHARS]
 
 
 def get_active_skills() -> List[str]:
@@ -161,7 +216,12 @@ def set_active_skills(skill_ids: List[str]) -> Dict[str, Any]:
 
 
 def skill_context_blocks() -> List[str]:
-    """Build markdown blocks to inject into system prompt."""
+    """Build markdown blocks to inject into system prompt.
+
+    AGENTS.md is injected in full (it's the project's own rules).
+    Skills use progressive disclosure: only name + description are injected.
+    The model loads the full SKILL.md via read_file when it decides to use the skill.
+    """
     blocks: List[str] = []
     agents = read_agents_md()
     if agents:
@@ -169,22 +229,43 @@ def skill_context_blocks() -> List[str]:
 
     active = get_active_skills()
     if active:
-        blocks.append("## Active Skills\n")
+        lines: List[str] = []
         for skill_id in active:
-            content = read_skill(skill_id)
-            if not content:
+            # Only inject name + description, not the full body
+            sd = skill_dir()
+            if not sd:
                 continue
-            blocks.append(f"### skill: {skill_id}\n{content}")
+            path = _resolve_skill_file(sd / skill_id)
+            if not path:
+                continue
+            loaded = _load_skill_file(path)
+            if not loaded:
+                continue
+            meta, _ = loaded
+            name = meta.get("name") or skill_id
+            desc = meta.get("description") or ""
+            entry = f"- **{name}** (`{skill_id}`)"
+            if desc:
+                entry += f": {desc}"
+            entry += f" — load with `read_file` on `skills/{skill_id}/SKILL.md` when needed"
+            lines.append(entry)
+        if lines:
+            blocks.append(
+                "## Available Skills (load on demand with read_file)\n"
+                + "\n".join(lines)
+            )
 
     return blocks
 
 
 def skill_status() -> Dict[str, Any]:
     ws = workspace_status()
+    paths = agents_md_paths()
     return {
         "workspace_configured": ws["configured"],
         "workspace_root": ws.get("root"),
         "skills_discovered": [s["id"] for s in discover_skills()],
         "active_skills": get_active_skills(),
-        "agents_md_exists": bool(agents_md_path() and agents_md_path().exists()),
+        "agents_md_exists": len(paths) > 0,
+        "agents_md_layers": [str(p) for p in paths],
     }
