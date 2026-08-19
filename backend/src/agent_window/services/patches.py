@@ -521,9 +521,13 @@ async def retry_patch(patch_id: str) -> PendingPatch:
 
 async def wait_for_decision(
     patch_id: str,
-    timeout: float = APPROVAL_TIMEOUT_SEC,
+    timeout: float | None = None,
     cancel_event: Optional[asyncio.Event] = None,
 ) -> PendingPatch:
+    if timeout is None:
+        from agent_window.services.agent_settings import load_agent_settings
+
+        timeout = float(load_agent_settings().get("approval_timeout_sec") or APPROVAL_TIMEOUT_SEC)
     patch = _patches.get(patch_id)
     if not patch:
         raise WorkspaceError("patch not found", "NOT_FOUND")

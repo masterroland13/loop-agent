@@ -90,6 +90,8 @@ export interface AgentSettings {
   confirm_memory: boolean
   context_limit: number
   active_skills: string[]
+  approval_timeout_sec: number
+  disabled_tools: string[]
 }
 
 export interface MemoryProposal {
@@ -343,6 +345,8 @@ export interface LlmConfig {
   api_key_configured: boolean
   base_url: string
   default_model: string
+  temperature: number
+  max_tokens: number
 }
 
 export async function fetchLlmConfig(): Promise<LlmConfig> {
@@ -354,11 +358,59 @@ export async function updateLlmConfig(patch: {
   api_key?: string
   base_url?: string
   default_model?: string
+  temperature?: number
+  max_tokens?: number
 }): Promise<LlmConfig> {
   const response = await apiFetch('/api/llm-config', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
+  })
+  return response.json()
+}
+
+export interface LlmTestResult {
+  ok: boolean
+  latency_ms?: number | null
+  model_count?: number | null
+  error?: string | null
+}
+
+export async function testLlmConnection(): Promise<LlmTestResult> {
+  const response = await apiFetch('/api/llm-config/test', { method: 'POST' })
+  return response.json()
+}
+
+export interface ToolInfo {
+  name: string
+  description: string
+}
+
+export interface ToolsResponse {
+  tools: ToolInfo[]
+  disabled_tools: string[]
+}
+
+export async function fetchTools(): Promise<ToolsResponse> {
+  const response = await apiFetch('/api/tools')
+  return response.json()
+}
+
+export interface MemoryContent {
+  content: string
+  path: string
+}
+
+export async function fetchMemoryContent(): Promise<MemoryContent> {
+  const response = await apiFetch('/api/memory/content')
+  return response.json()
+}
+
+export async function updateMemoryContent(content: string): Promise<MemoryContent> {
+  const response = await apiFetch('/api/memory/content', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
   })
   return response.json()
 }

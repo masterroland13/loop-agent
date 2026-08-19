@@ -24,6 +24,9 @@ from agent_window.schemas import (
     HealthResponse,
     LlmConfigResponse,
     LlmConfigUpdateRequest,
+    LlmTestResponse,
+    MemoryContentResponse,
+    MemoryContentUpdateRequest,
     MemoryProposalResponse,
     MessageRequest,
     MessageResponse,
@@ -37,6 +40,8 @@ from agent_window.schemas import (
     SkillActivateRequest,
     SkillInfo,
     SkillsResponse,
+    ToolInfo,
+    ToolsResponse,
     WorkspaceBrowseResponse,
     WorkspaceSetRequest,
     WorkspaceStatusResponse,
@@ -52,6 +57,8 @@ from agent_window.services.memory import (
     memory_status,
     memory_to_public,
     read_user_md,
+    user_md_path,
+    write_user_md,
 )
 from agent_window.services.patches import apply_partial_patch, decide_patch, list_pending, patch_to_public, retry_patch
 from agent_window.services.provider import provider
@@ -163,6 +170,8 @@ def _system_prompt() -> str:
         base = (
             "You are a helpful coding assistant. Answer concisely in Chinese unless the user asks otherwise. "
             "When providing code, use Markdown code blocks with the language identifier. "
+            "中文回复必须使用规范的全角标点（，。：；！？），不要在中文句子里夹半角逗号、冒号或句号；"
+            "代码、命令、路径、英文术语保持半角原样。 "
             f"You have tools available: {tool_names}. "
             f"{workspace_hint} "
             "When the user asks about weather, call get_weather. "
@@ -274,6 +283,52 @@ def put_llm_config_endpoint(request: LlmConfigUpdateRequest, db: Session = Depen
     )
     provider._sync_client()
     return LlmConfigResponse(**saved)
+
+
+@router.post("/api/llm-config/test", response_model=LlmTestResponse)
+async def test_llm_config_endpoint():
+    """Ping the gateway by listing models; report latency."""
+    import time as _time
+
+    provider._sync_client()
+    if not provider.is_available():
+        return LlmTestResponse(ok=False, error="未配置 API Key")
+    start = _time.monotonic()
+    try:
+        data = await provider.list_models()
+    except Exception as e:
+        return LlmTestResponse(ok=False, error=str(e)[:200])
+    latency = int((_time.monotonic() - start) * 1000)
+    count = len(data.get("models") or [])
+    source = data.get("source")
+    if source == "fallback":
+        return LlmTestResponse(ok=False, latency_ms=latency, error="网关未返回模型列表（用了本地备用列表）")
+    return LlmTestResponse(ok=True, latency_ms=latency, model_count=count)
+
+
+@router.get("/api/tools", response_model=ToolsResponse)
+def list_tools_endpoint():
+    import agent_window.tools  # noqa: F401  (ensure registration)
+
+    agent = load_agent_settings()
+    disabled = [str(t) for t in agent.get("disabled_tools") or []]
+    tools = [
+        ToolInfo(name=name, description=(registry.get(name).description if registry.get(name) else ""))
+        for name in registry.list_names()
+    ]
+    return ToolsResponse(tools=tools, disabled_tools=disabled)
+
+
+@router.get("/api/memory/content", response_model=MemoryContentResponse)
+def get_memory_content_endpoint():
+    return MemoryContentResponse(content=read_user_md(), path=str(user_md_path()))
+
+
+@router.put("/api/memory/content", response_model=MemoryContentResponse)
+def put_memory_content_endpoint(request: MemoryContentUpdateRequest, db: Session = Depends(get_db)):
+    write_user_md(request.content)
+    emit_audit(db, "memory.direct_edit", payload={"size": len(request.content)})
+    return MemoryContentResponse(content=read_user_md(), path=str(user_md_path()))
 
 
 @router.get("/api/skills", response_model=SkillsResponse)

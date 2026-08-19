@@ -11,6 +11,7 @@ export interface SettingsState {
   contextLimit: number
   confirmMemory: boolean
   activeSkills: string[]
+  approvalTimeoutSec: number
   enterToSend: boolean
   shortcuts: boolean
   dataDir: string
@@ -26,6 +27,7 @@ export const defaultSettings: SettingsState = {
   contextLimit: 8192,
   confirmMemory: true,
   activeSkills: [],
+  approvalTimeoutSec: 300,
   enterToSend: true,
   shortcuts: true,
   dataDir: '',
@@ -36,6 +38,7 @@ const AGENT_KEYS = new Set<keyof SettingsState>([
   'confirmMemory',
   'contextLimit',
   'activeSkills',
+  'approvalTimeoutSec',
 ])
 
 export function loadSettings(): SettingsState {
@@ -70,6 +73,7 @@ export function useSettings() {
     confirmMemory: settings.confirmMemory,
     contextLimit: settings.contextLimit,
     activeSkills: settings.activeSkills,
+    approvalTimeoutSec: settings.approvalTimeoutSec,
   })
 
   useEffect(() => {
@@ -85,12 +89,14 @@ export function useSettings() {
             confirmMemory: remote.confirm_memory,
             contextLimit: remote.context_limit,
             activeSkills: Array.isArray(remote.active_skills) ? remote.active_skills : [],
+            approvalTimeoutSec: remote.approval_timeout_sec ?? 300,
           }
           prevAgent.current = {
             autoCompress: next.autoCompress,
             confirmMemory: next.confirmMemory,
             contextLimit: next.contextLimit,
             activeSkills: next.activeSkills,
+            approvalTimeoutSec: next.approvalTimeoutSec,
           }
           return next
         })
@@ -119,6 +125,7 @@ export function useSettings() {
       settings.autoCompress !== prevAgent.current.autoCompress ||
       settings.confirmMemory !== prevAgent.current.confirmMemory ||
       settings.contextLimit !== prevAgent.current.contextLimit ||
+      settings.approvalTimeoutSec !== prevAgent.current.approvalTimeoutSec ||
       settings.activeSkills.length !== prevAgent.current.activeSkills.length ||
       settings.activeSkills.some((id, i) => id !== prevAgent.current.activeSkills[i])
 
@@ -129,6 +136,7 @@ export function useSettings() {
       confirmMemory: settings.confirmMemory,
       contextLimit: settings.contextLimit,
       activeSkills: settings.activeSkills,
+      approvalTimeoutSec: settings.approvalTimeoutSec,
     }
 
     updateAgentSettings({
@@ -136,6 +144,7 @@ export function useSettings() {
       confirm_memory: settings.confirmMemory,
       context_limit: settings.contextLimit,
       active_skills: settings.activeSkills,
+      approval_timeout_sec: settings.approvalTimeoutSec,
     }).catch(() => {
       // ignore transient sync errors
     })

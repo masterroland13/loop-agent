@@ -499,7 +499,13 @@ function App() {
         {isEmpty ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6">
             <div className="flex flex-1 flex-col items-center justify-center">
-              <div className="mb-[12vh] flex w-full max-w-[640px] flex-col items-stretch gap-3">
+              <div className="mb-[10vh] flex w-full max-w-[640px] flex-col items-stretch gap-3">
+                <div className="mb-7 flex flex-col items-center gap-4 text-center">
+                  <img src="/favicon.svg" alt="Hal Agent" className="h-14 w-14 drop-shadow-[0_0_24px_rgba(134,59,255,0.35)]" />
+                  <h1 className="text-[22px] font-semibold tracking-tight text-[var(--text-h)]">
+                    What can I help you with?
+                  </h1>
+                </div>
                 <DiffPanel
                   patches={pendingPatches}
                   busyId={patchBusyId}

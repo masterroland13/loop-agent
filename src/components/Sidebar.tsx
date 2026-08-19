@@ -158,7 +158,7 @@ export function Sidebar({
           type="button"
           onClick={onNewSession}
           disabled={isLoading || isStreaming}
-          className="flex w-full items-center gap-2 rounded-[var(--radius-pill)] bg-[var(--surface-hover)] px-3 py-2 text-sm text-[var(--sidebar-text)] transition-colors hover:bg-[var(--surface-active)] disabled:opacity-40"
+          className="flex w-full items-center gap-2 rounded-[var(--radius-pill)] bg-[var(--surface-hover)] px-3 py-2 text-[15px] font-medium tracking-[0.02em] text-[var(--sidebar-text)] transition-colors hover:bg-[var(--surface-active)] disabled:opacity-40"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
             <path d="M12 2L2 7l10 5 10-5-10-5z" />
@@ -189,7 +189,7 @@ export function Sidebar({
                   onSwitchWorkspace(workspace.id)
                   toggleFolder(workspace.id)
                 }}
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[14px] font-[500] tracking-[0.02em] text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -302,7 +302,7 @@ export function Sidebar({
                               onSwitchSession(chat.id)
                             }}
                             onDoubleClick={() => beginRename(chat.id, chat.title)}
-                            className="min-w-0 flex-1 truncate py-0.5 text-left text-[13px]"
+                            className="min-w-0 flex-1 truncate py-0.5 text-left text-[13.5px] font-[450] tracking-[0.015em]"
                             title="双击重命名"
                           >
                             {chat.title}
@@ -445,7 +445,7 @@ function NavItem({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
+      className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-[14px] font-[500] tracking-[0.02em] text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
     >
       {icon === 'search' ? (
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">

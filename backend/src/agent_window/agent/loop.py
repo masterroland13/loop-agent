@@ -397,7 +397,12 @@ async def run_agent_loop(
     """
     import agent_window.tools  # noqa: F401
 
-    tools = registry.get_openai_tools()
+    agent_cfg = load_agent_settings()
+    disabled_tools = set(agent_cfg.get("disabled_tools") or [])
+    tools = [
+        t for t in registry.get_openai_tools()
+        if t.get("function", {}).get("name") not in disabled_tools
+    ]
     working = list(messages)
     write_gate_seen = False
     shell_gate_seen = False

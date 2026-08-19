@@ -85,7 +85,7 @@ export function ToolTimeline({ items, isStreaming, onRetryStep }: ToolTimelinePr
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
       >
         <span className="text-[var(--text-dim)]">{expanded ? '▾' : '▸'}</span>
-        <span className="font-medium text-[var(--text-h)]">工具轨迹</span>
+        <span className="font-medium text-[var(--text-muted)]">工具轨迹</span>
         <span className="truncate opacity-80">{summary}</span>
         {isStreaming && runningCount > 0 && (
           <span className="ml-auto inline-flex gap-0.5">
@@ -126,7 +126,7 @@ export function ToolTimeline({ items, isStreaming, onRetryStep }: ToolTimelinePr
                     onClick={() => setOpenIdx(isOpen ? null : i)}
                     className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-[var(--surface-hover)]"
                   >
-                    <span className="shrink-0 font-mono text-[12px] text-[var(--text-h)]">{t.name}</span>
+                    <span className="shrink-0 font-mono text-[12px] font-normal text-[var(--text-muted)]">{t.name}</span>
                     <span
                       className={[
                         'min-w-0 flex-1 truncate text-[11px]',

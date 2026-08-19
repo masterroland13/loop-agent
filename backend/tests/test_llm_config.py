@@ -29,11 +29,13 @@ def fake_env(tmp_path, monkeypatch):
 
 def test_public_config_hides_api_key(fake_env) -> None:
     public = public_llm_config()
-    assert set(public) == {"api_key_configured", "base_url", "default_model"}
+    assert set(public) == {"api_key_configured", "base_url", "default_model", "temperature", "max_tokens"}
     assert "old-key" not in str(public)
     assert public["api_key_configured"] is True
     assert public["base_url"] == "https://old.example/v1"
     assert public["default_model"] == "old-model"
+    assert public["temperature"] == pytest.approx(0.7)
+    assert public["max_tokens"] == 2048
 
 
 def test_save_writes_env_and_updates_settings(fake_env) -> None:

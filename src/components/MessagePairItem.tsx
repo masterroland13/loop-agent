@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { MessagePair, ToolTraceItem } from '../types'
+import { Markdown } from './Markdown'
 import { ToolTimeline } from './ToolTimeline'
 
 interface MessagePairItemProps {
@@ -46,7 +47,7 @@ export function MessagePairItem({
             : 'outline outline-2 outline-transparent outline-offset-2',
         ].join(' ')}
       >
-        <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--text-h)]">
+        <p className="whitespace-pre-wrap text-[15px] font-[480] leading-[1.75] tracking-[0.02em] text-[var(--text-h)]">
           {pair.user.content}
         </p>
       </div>
@@ -76,11 +77,14 @@ export function MessagePairItem({
         ) : pair.assistant.content ? (
           <div
             className={[
-              'whitespace-pre-wrap text-[15px] leading-relaxed',
-              pair.failed ? 'text-red-300/90' : 'text-[var(--agent-text)]',
+              'text-[15px] font-[520] leading-[1.8] tracking-[0.02em]',
+              pair.failed ? 'text-red-300/90' : 'text-[var(--text-h)]',
             ].join(' ')}
           >
-            {pair.assistant.content}
+            <Markdown content={pair.assistant.content} />
+            {isStreaming && (
+              <span className="ml-1.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[2px] bg-[var(--accent)] align-[-2px]" />
+            )}
           </div>
         ) : isStreaming && hasTools ? (
           <div className="text-sm text-[var(--text-muted)]">
@@ -101,7 +105,7 @@ export function MessagePairItem({
                   setCopied(true)
                   setTimeout(() => setCopied(false), 1500)
                 }}
-                className="rounded-md bg-[var(--surface)] px-2 py-1 font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--text-h)]"
+                className="rounded-md px-1.5 py-1 font-mono text-[10px] font-normal tracking-wide text-[var(--text-dim)] hover:text-[var(--text-muted)]"
               >
                 {[
                   pair.turnMeta.model,

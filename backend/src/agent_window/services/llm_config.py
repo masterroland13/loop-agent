@@ -16,7 +16,7 @@ from agent_window.config import settings
 
 logger = logging.getLogger(__name__)
 
-_ENV_KEYS = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+_ENV_KEYS = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TEMPERATURE", "LLM_MAX_TOKENS")
 
 
 def _env_path() -> Path:
@@ -70,6 +70,8 @@ def public_llm_config(_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "api_key_configured": bool(str(settings.llm_api_key or "").strip()),
         "base_url": (settings.llm_base_url or "").rstrip("/"),
         "default_model": settings.llm_model or "",
+        "temperature": settings.llm_temperature,
+        "max_tokens": settings.llm_max_tokens,
     }
 
 
@@ -83,6 +85,16 @@ def save_llm_config(updates: Dict[str, Any]) -> Dict[str, Any]:
             env_updates["LLM_API_KEY"] = key
     if "default_model" in updates and updates["default_model"] is not None:
         env_updates["LLM_MODEL"] = _normalize_model(str(updates["default_model"]))
+    if "temperature" in updates and updates["temperature"] is not None:
+        temp = float(updates["temperature"])
+        if not (0.0 <= temp <= 2.0):
+            raise ValueError("Temperature 必须在 0 到 2 之间")
+        env_updates["LLM_TEMPERATURE"] = str(temp)
+    if "max_tokens" in updates and updates["max_tokens"] is not None:
+        tokens = int(updates["max_tokens"])
+        if not (256 <= tokens <= 200000):
+            raise ValueError("Max Tokens 必须在 256 到 200000 之间")
+        env_updates["LLM_MAX_TOKENS"] = str(tokens)
     if not env_updates:
         return public_llm_config()
 
@@ -95,5 +107,9 @@ def save_llm_config(updates: Dict[str, Any]) -> Dict[str, Any]:
         settings.llm_api_key = env_updates["LLM_API_KEY"]
     if "LLM_MODEL" in env_updates:
         settings.llm_model = env_updates["LLM_MODEL"]
+    if "LLM_TEMPERATURE" in env_updates:
+        settings.llm_temperature = float(env_updates["LLM_TEMPERATURE"])
+    if "LLM_MAX_TOKENS" in env_updates:
+        settings.llm_max_tokens = int(env_updates["LLM_MAX_TOKENS"])
     return public_llm_config()
 

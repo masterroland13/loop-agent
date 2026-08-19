@@ -55,8 +55,14 @@ function MemoryCard({
               : memory.status
 
   return (
-    <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)]">
-      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
+    <div
+      className={[
+        'overflow-hidden rounded-xl border bg-[var(--bg-elevated)] transition-shadow',
+        pending
+          ? 'border-[var(--border)] border-l-2 border-l-[var(--accent-solid)] shadow-[0_0_28px_rgba(134,59,255,0.12)]'
+          : 'border-[var(--border)]',
+      ].join(' ')}
+    >      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -88,7 +94,7 @@ function MemoryCard({
               type="button"
               disabled={busy}
               onClick={onApply}
-              className="rounded-md bg-[var(--text-h)] px-2.5 py-1 text-xs text-[var(--bg)] disabled:opacity-50"
+              className="rounded-md bg-[var(--accent-solid)] px-2.5 py-1 text-xs font-medium text-white transition-all hover:brightness-110 active:scale-[0.96] disabled:opacity-50"
             >
               {busy ? '…' : 'Apply'}
             </button>

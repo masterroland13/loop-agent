@@ -249,9 +249,13 @@ async def decide_memory(proposal_id: str, decision: str) -> PendingMemory:
 
 async def wait_for_memory_decision(
     proposal_id: str,
-    timeout: float = APPROVAL_TIMEOUT_SEC,
+    timeout: float | None = None,
     cancel_event: Optional[asyncio.Event] = None,
 ) -> PendingMemory:
+    if timeout is None:
+        from agent_window.services.agent_settings import load_agent_settings
+
+        timeout = float(load_agent_settings().get("approval_timeout_sec") or APPROVAL_TIMEOUT_SEC)
     item = _memories.get(proposal_id)
     if not item:
         raise WorkspaceError("memory proposal not found", "NOT_FOUND")

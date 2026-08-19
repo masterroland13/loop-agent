@@ -63,7 +63,7 @@ export function ChatInput({
 
       <div
         className={[
-          'w-full rounded-2xl border border-[var(--input-border)] bg-[var(--input-bg)] shadow-[0_0_0_1px_rgba(255,255,255,0.02)] transition-colors focus-within:border-[var(--input-focus)]',
+          'w-full rounded-2xl border border-[var(--input-border)] bg-[var(--input-bg)] shadow-[0_0_0_1px_rgba(255,255,255,0.02)] transition-all focus-within:border-[var(--accent)] focus-within:shadow-[0_0_0_3px_var(--accent-bg)]',
           isCenter ? 'min-h-[148px] px-5 pb-3.5 pt-4' : 'px-4 py-3',
         ].join(' ')}
       >
@@ -128,7 +128,7 @@ export function ChatInput({
                 disabled={disabled || !value.trim()}
                 title="发送"
                 aria-label="发送"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--text-h)] text-[var(--bg)] transition-opacity hover:opacity-90 disabled:opacity-30"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent-solid)] text-white transition-all hover:brightness-110 active:scale-[0.94] disabled:opacity-30"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4.5 w-4.5">
                   <path d="M12 19V5" />

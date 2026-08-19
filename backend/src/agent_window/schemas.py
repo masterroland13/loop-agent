@@ -124,6 +124,8 @@ class AgentSettingsResponse(BaseModel):
     confirm_memory: bool
     context_limit: int
     active_skills: List[str] = []
+    approval_timeout_sec: int = 300
+    disabled_tools: List[str] = []
 
 
 class AgentSettingsUpdateRequest(BaseModel):
@@ -131,18 +133,50 @@ class AgentSettingsUpdateRequest(BaseModel):
     confirm_memory: bool | None = None
     context_limit: int | None = Field(default=None, ge=2048, le=32768)
     active_skills: List[str] | None = None
+    approval_timeout_sec: int | None = Field(default=None, ge=30, le=3600)
+    disabled_tools: List[str] | None = None
 
 
 class LlmConfigResponse(BaseModel):
     api_key_configured: bool
     base_url: str
     default_model: str
+    temperature: float
+    max_tokens: int
 
 
 class LlmConfigUpdateRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096)
     base_url: str | None = Field(default=None, max_length=2048)
     default_model: str | None = Field(default=None, max_length=128)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=256, le=200000)
+
+
+class LlmTestResponse(BaseModel):
+    ok: bool
+    latency_ms: int | None = None
+    model_count: int | None = None
+    error: str | None = None
+
+
+class ToolInfo(BaseModel):
+    name: str
+    description: str
+
+
+class ToolsResponse(BaseModel):
+    tools: List[ToolInfo]
+    disabled_tools: List[str]
+
+
+class MemoryContentResponse(BaseModel):
+    content: str
+    path: str
+
+
+class MemoryContentUpdateRequest(BaseModel):
+    content: str = Field(default="", max_length=100000)
 
 
 class SkillInfo(BaseModel):
