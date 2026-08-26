@@ -34,6 +34,7 @@ class Session(Base):
     user_id = Column(String(64), nullable=False, default=settings.default_user_id)
     title = Column(String(255), nullable=False)
     data_path = Column(String(512), nullable=False)
+    workspace_root = Column(String(1024), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -56,6 +57,8 @@ class Message(Base):
     sequence = Column(Integer, nullable=False)
     is_favorite = Column(Boolean, default=False)
     summary = Column(Text, default="")
+    trace = Column(Text, default="[]")
+    attachments = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("Session", back_populates="messages")
@@ -103,6 +106,47 @@ def get_sessionmaker():
 
 def init_db():
     Base.metadata.create_all(bind=get_engine())
+    _migrate_messages_trace()
+    _migrate_messages_attachments()
+    _migrate_sessions_workspace_root()
+
+
+def _migrate_messages_trace() -> None:
+    from sqlalchemy import text
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(messages)")).fetchall()
+        names = {row[1] for row in cols}
+        if "trace" not in names:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN trace TEXT DEFAULT '[]'"))
+            conn.commit()
+
+
+def _migrate_messages_attachments() -> None:
+    from sqlalchemy import text
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(messages)")).fetchall()
+        names = {row[1] for row in cols}
+        if "attachments" not in names:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'"))
+            conn.commit()
+
+
+
+
+def _migrate_sessions_workspace_root() -> None:
+    from sqlalchemy import text
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(sessions)")).fetchall()
+        names = {row[1] for row in cols}
+        if "workspace_root" not in names:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN workspace_root VARCHAR(1024)"))
+            conn.commit()
 
 
 def get_db():

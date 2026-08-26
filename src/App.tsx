@@ -5,6 +5,8 @@ import {
   fetchModels,
   fetchRuntime,
   fetchWorkspace,
+  getMessages,
+  setWorkspace,
   toggleMessageFavorite,
   type FavoriteItem,
   type WorkspaceStatus,
@@ -26,8 +28,20 @@ import { useGlobalFavorites } from './hooks/useFavorites'
 import { useMessagePairs } from './hooks/useMessagePairs'
 import { applyFontSize, applyTheme, useSettings } from './hooks/useSettings'
 import { useApiSessions } from './hooks/useSessions'
+import { useSessionMeta } from './hooks/useSessionMeta'
+import { uploadAttachment } from './api/agent'
+import {
+  canSendDraft,
+  draftContentForSend,
+  readyAttachmentIds,
+  type ChatAttachment,
+} from './utils/chatAttachment'
 import { useTheme } from './hooks/useTheme'
-import { useWorkspaces } from './hooks/useWorkspaces'
+import {
+  normalizeRoot,
+  projectIdFromRoot,
+  useWorkspaces,
+} from './hooks/useWorkspaces'
 
 const MODEL_KEY = 'agent-chat:model'
 const BOOT_KEY = 'agent-chat:boot_id'
@@ -48,16 +62,20 @@ function loadModel(): string {
 
 function App() {
   const {
-    workspaces,
-    activeWorkspaceId,
+    projects,
+    activeProjectId,
     sidebarCollapsed,
     sidebarWidth,
-    switchWorkspace,
-    assignSessionToWorkspace,
-    removeSessionFromWorkspace,
+    switchProject,
+    upsertProjectFromRoot,
+    reclaimOrphanSessionsToProject,
+    assignSessionToProject,
+    syncSessionsFromServer,
+    removeSessionFromProject,
+    removeProjectFromSidebar,
     toggleSidebarCollapsed,
     setSidebarWidth,
-    filterSessionsByWorkspace,
+    projectIdForSession,
   } = useWorkspaces()
 
   const { isDark, toggleTheme, setTheme } = useTheme()
@@ -81,7 +99,18 @@ function App() {
     updateSessionTitle,
     renameSession,
     deleteSession,
-  } = useApiSessions(assignSessionToWorkspace, removeSessionFromWorkspace)
+  } = useApiSessions(assignSessionToProject, removeSessionFromProject)
+
+  const {
+    isPinned,
+    togglePin,
+    isUnread,
+    isManuallyUnread,
+    markRead,
+    markUnread,
+    sortSessions,
+    touchSeen,
+  } = useSessionMeta()
 
   const { favorites, refresh: refreshFavorites } = useGlobalFavorites()
 
@@ -121,7 +150,21 @@ function App() {
 
   const [showFavorites, setShowFavorites] = useState(false)
   const [inputValue, setInputValue] = useState('')
-  const [attachedFileName, setAttachedFileName] = useState<string | null>(null)
+  const [attachedFiles, setAttachedFiles] = useState<ChatAttachment[]>([])
+  const [expandedUser, setExpandedUser] = useState<{
+    pairId: string
+    draft: string
+    attachedFiles: ChatAttachment[]
+  } | null>(null)
+  const fileUploadTargetRef = useRef<'bottom' | 'card'>('bottom')
+  const draftBySessionRef = useRef(new Map<string, { text: string; attachments: ChatAttachment[] }>())
+  const prevSessionIdRef = useRef<string | null>(null)
+  const streamingSessionIdRef = useRef<string | null>(null)
+  const wasStreamingRef = useRef(false)
+  const inputValueRef = useRef('')
+  const attachedFilesRef = useRef<ChatAttachment[]>([])
+  inputValueRef.current = inputValue
+  attachedFilesRef.current = attachedFiles
   const [providerAvailable, setProviderAvailable] = useState<boolean | null>(null)
   const [pendingFavoriteId, setPendingFavoriteId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -133,11 +176,6 @@ function App() {
       approvalAreaRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   }, [awaitingApproval])
-
-  const visibleSessions = useMemo(
-    () => filterSessionsByWorkspace(sessions),
-    [filterSessionsByWorkspace, sessions],
-  )
 
   const favoriteIndexMap = useMemo(() => {
     const map = new Map<string, number>()
@@ -154,6 +192,107 @@ function App() {
     setToast(message)
     window.setTimeout(() => setToast(null), 2200)
   }, [])
+
+  useEffect(() => {
+    for (const s of sessions) {
+      touchSeen(s.id, s.updated_at)
+    }
+  }, [sessions, touchSeen])
+
+  const sidebarSessions = useMemo(() => {
+    const mapped = sessions.map((s) => {
+      const unread = isUnread(s.id, s.updated_at)
+      const isActive = s.id === activeSessionId
+      return {
+        id: s.id,
+        title: s.title,
+        updatedAt: s.updated_at,
+        isActive,
+        isPinned: isPinned(s.id),
+        isUnread: unread,
+        showUnreadDot: unread && (!isActive || isManuallyUnread(s.id)),
+      }
+    })
+    return sortSessions(mapped)
+  }, [sessions, activeSessionId, isUnread, isManuallyUnread, isPinned, sortSessions])
+
+  const activateProject = useCallback(
+    async (projectId: string) => {
+      switchProject(projectId)
+      const project = projects.find((p) => p.id === projectId)
+      if (project?.root) {
+        try {
+          const status = await setWorkspace(project.root)
+          setWorkspaceState(status)
+          setPcMode(status.configured)
+        } catch {
+          showToast('切换工作区失败')
+        }
+      }
+    },
+    [projects, switchProject, showToast],
+  )
+
+  const handleSwitchSession = useCallback(
+    (id: string) => {
+      const session = sessions.find((s) => s.id === id)
+      markRead(id, session?.updated_at)
+      switchSession(id)
+      const root = (session?.workspace_root ?? '').trim()
+      if (root) {
+        void activateProject(projectIdFromRoot(normalizeRoot(root)))
+      }
+    },
+    [sessions, markRead, switchSession, activateProject],
+  )
+
+  useEffect(() => {
+    if (isStreaming && !wasStreamingRef.current) {
+      streamingSessionIdRef.current = activeSessionId
+    }
+    if (!isStreaming && wasStreamingRef.current) {
+      const streamId = streamingSessionIdRef.current
+      if (streamId) {
+        if (activeSessionId !== streamId) {
+          markUnread(streamId)
+        } else {
+          const session = sessions.find((s) => s.id === streamId)
+          markRead(streamId, session?.updated_at)
+        }
+      }
+      streamingSessionIdRef.current = null
+    }
+    wasStreamingRef.current = isStreaming
+  }, [isStreaming, activeSessionId, markUnread, markRead, sessions])
+
+  const handleCopySessionId = useCallback(
+    (sessionId: string) => {
+      void navigator.clipboard.writeText(sessionId).then(
+        () => showToast('已复制 Agent ID'),
+        () => showToast(sessionId),
+      )
+    },
+    [showToast],
+  )
+
+  const handleCopyTranscript = useCallback(
+    async (sessionId: string) => {
+      try {
+        const messages = await getMessages(sessionId)
+        const md = messages
+          .map((m) => {
+            const heading = m.role === 'user' ? 'User' : 'Assistant'
+            return `### ${heading}\n\n${m.content}`
+          })
+          .join('\n\n')
+        await navigator.clipboard.writeText(md)
+        showToast('已复制对话记录')
+      } catch {
+        showToast('复制失败')
+      }
+    },
+    [showToast],
+  )
 
   useEffect(() => {
     applyTheme(settings.theme)
@@ -186,6 +325,11 @@ function App() {
       .then((ws) => {
         setWorkspaceState(ws)
         setPcMode(ws.configured)
+        if (ws.configured && ws.root) {
+          const projectId = upsertProjectFromRoot(ws.root, ws.name || undefined, false)
+          // Defer reclaim until sessions are loaded (effect below); stash id on ws via state.
+          void projectId
+        }
       })
       .catch(() => {
         setWorkspaceState(null)
@@ -210,14 +354,28 @@ function App() {
       .catch(() => {
         // keep local selection
       })
-  }, [showToast])
+  }, [showToast, upsertProjectFromRoot])
 
+  // Remap orphan proj_* session map entries onto the current disk project (never sweep unbound).
   useEffect(() => {
-    if (visibleSessions.length === 0) return
-    if (!visibleSessions.some((s) => s.id === activeSessionId)) {
-      switchSession(visibleSessions[0].id)
+    if (!workspace?.configured || !workspace.root) return
+    const projectId = upsertProjectFromRoot(workspace.root, workspace.name || undefined, false)
+    reclaimOrphanSessionsToProject(projectId)
+  }, [
+    workspace?.configured,
+    workspace?.root,
+    workspace?.name,
+    upsertProjectFromRoot,
+    reclaimOrphanSessionsToProject,
+  ])
+
+  // Hard-bind: upsert projects from server workspace_root and sync session map.
+  useEffect(() => {
+    for (const s of sessions) {
+      if (s.workspace_root) upsertProjectFromRoot(s.workspace_root, undefined, false)
     }
-  }, [activeWorkspaceId, visibleSessions, activeSessionId, switchSession])
+    syncSessionsFromServer(sessions)
+  }, [sessions, upsertProjectFromRoot, syncSessionsFromServer])
 
   useEffect(() => {
     if (!pendingFavoriteId) return
@@ -228,6 +386,46 @@ function App() {
       setShowFavorites(false)
     }
   }, [pendingFavoriteId, pairs, goToIndex])
+
+  // Input drafts are per-session; new / switched chats must not inherit another session's text.
+  useEffect(() => {
+    const prev = prevSessionIdRef.current
+    if (prev === activeSessionId) return
+
+    if (prev) {
+      draftBySessionRef.current.set(prev, {
+        text: inputValueRef.current,
+        attachments: attachedFilesRef.current,
+      })
+    }
+
+    if (activeSessionId) {
+      const draft = draftBySessionRef.current.get(activeSessionId)
+      setInputValue(draft?.text ?? '')
+      setAttachedFiles(draft?.attachments ?? [])
+    } else {
+      setInputValue('')
+      setAttachedFiles([])
+    }
+
+    prevSessionIdRef.current = activeSessionId
+  }, [activeSessionId])
+
+  useEffect(() => {
+    setExpandedUser(null)
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!expandedUser) return
+    const onPointerDown = (e: MouseEvent) => {
+      const el = e.target as Element
+      if (el.closest('[data-expanded-user-card]')) return
+      if (showModelPicker || showSettings || showSearch || showWorkspacePicker || showFavorites) return
+      setExpandedUser(null)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [expandedUser, showModelPicker, showSettings, showSearch, showWorkspacePicker, showFavorites])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -241,7 +439,10 @@ function App() {
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault()
-        if (!isLoading && !isStreaming) void createSession('New Agent')
+        if (!isLoading && !isStreaming) {
+          const project = projects.find((p) => p.id === activeProjectId)
+          void createSession('New Agent', activeProjectId, project?.root ?? null)
+        }
         return
       }
       if ((e.ctrlKey || e.metaKey) && e.key === ',') {
@@ -250,6 +451,11 @@ function App() {
         return
       }
       if (e.key === 'Escape') {
+        if (expandedUser) {
+          e.preventDefault()
+          setExpandedUser(null)
+          return
+        }
         if (isStreaming || awaitingApproval) {
           e.preventDefault()
           stopStreaming()
@@ -273,53 +479,139 @@ function App() {
     isStreaming,
     awaitingApproval,
     createSession,
+    activeProjectId,
+    projects,
     stopStreaming,
     goPrevious,
     goNext,
+    expandedUser,
   ])
 
   const handleSend = () => {
-    const content = inputValue.trim()
-    if (!content || isStreaming || awaitingApproval) return
-    const prefix = pcMode ? '' : ''
-    sendMessage(`${prefix}${content}`)
+    if (isStreaming || awaitingApproval || expandedUser) return
+    if (!canSendDraft(inputValue, attachedFiles)) return
+    const content = draftContentForSend(inputValue)
+    const ids = readyAttachmentIds(attachedFiles)
+    const metas = attachedFiles
+      .filter((a) => a.status === 'ready' && a.id)
+      .map((a) => ({
+        id: a.id as string,
+        filename: a.name,
+        size: a.size ?? 0,
+        content_type: a.contentType,
+        url: a.url || '',
+      }))
+    sendMessage(content, ids, metas)
     setInputValue('')
-    setAttachedFileName(null)
+    setAttachedFiles([])
+    if (activeSessionId) draftBySessionRef.current.delete(activeSessionId)
   }
 
-  const handleNewSession = async () => {
+  const handleExpandUser = useCallback((pairId: string, content: string) => {
+    setExpandedUser({ pairId, draft: content, attachedFiles: [] })
+  }, [])
+
+  const handleExpandedSend = useCallback(() => {
+    if (!expandedUser || isStreaming || awaitingApproval) return
+    if (!canSendDraft(expandedUser.draft, expandedUser.attachedFiles)) return
+    const content = draftContentForSend(expandedUser.draft)
+    const ids = readyAttachmentIds(expandedUser.attachedFiles)
+    const metas = expandedUser.attachedFiles
+      .filter((a) => a.status === 'ready' && a.id)
+      .map((a) => ({
+        id: a.id as string,
+        filename: a.name,
+        size: a.size ?? 0,
+        content_type: a.contentType,
+        url: a.url || '',
+      }))
+    sendMessage(content, ids, metas)
+    setExpandedUser(null)
+  }, [expandedUser, isStreaming, awaitingApproval, sendMessage])
+
+  const handleExpandedDraftChange = useCallback((value: string) => {
+    setExpandedUser((prev) => (prev ? { ...prev, draft: value } : prev))
+  }, [])
+
+  const handleExpandedAttach = useCallback(() => {
+    fileUploadTargetRef.current = 'card'
+    fileInputRef.current?.click()
+  }, [])
+
+  const handleNewSession = async (projectId?: string) => {
     if (isLoading || isStreaming) return
-    await createSession('New Agent')
+    const target = projectId ?? activeProjectId
+    await activateProject(target)
+    const project = projects.find((p) => p.id === target)
+    await createSession('New Agent', target, project?.root ?? null)
   }
 
-  const handleUploadClick = () => fileInputRef.current?.click()
+  const handleUploadClick = () => {
+    fileUploadTargetRef.current = 'bottom'
+    fileInputRef.current?.click()
+  }
+
+  const upsertAttachment = useCallback((attachment: ChatAttachment, target: 'bottom' | 'card') => {
+    const merge = (list: ChatAttachment[]) => {
+      const idx = list.findIndex((a) => a.localKey === attachment.localKey)
+      if (idx < 0) return [...list, attachment]
+      const next = [...list]
+      next[idx] = attachment
+      return next
+    }
+    if (target === 'card') {
+      setExpandedUser((prev) => (prev ? { ...prev, attachedFiles: merge(prev.attachedFiles) } : prev))
+    } else {
+      setAttachedFiles((prev) => merge(prev))
+    }
+  }, [])
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
+    e.target.value = ''
     if (!file) return
-    const textExts = ['.txt', '.md', '.json', '.csv', '.log', '.py', '.ts', '.tsx', '.js', '.jsx', '.html', '.css']
-    const isText = file.type.startsWith('text/') || textExts.some((ext) => file.name.toLowerCase().endsWith(ext))
-    if (!isText) {
-      setInputValue((p) => `${p}${p ? '\n\n' : ''}[附件: ${file.name}]`)
-      setAttachedFileName(file.name)
-      e.target.value = ''
+    if (!activeSessionId) {
+      showToast('请先选择会话再上传附件')
       return
     }
-    try {
-      const text = await file.text()
-      const snippet = text.length > 8000 ? `${text.slice(0, 8000)}\n...(截断)` : text
-      setInputValue((p) => (p ? `${p}\n\n--- ${file.name} ---\n${snippet}` : `--- ${file.name} ---\n${snippet}`))
-      setAttachedFileName(file.name)
-    } catch {
-      setInputValue((p) => `${p}${p ? '\n\n' : ''}[读取失败: ${file.name}]`)
+
+    const target = fileUploadTargetRef.current
+    const localKey = `local-${Date.now()}-${file.name}`
+    const pending: ChatAttachment = {
+      localKey,
+      name: file.name,
+      kind: 'file',
+      status: 'pending',
+      size: file.size,
+      contentType: file.type || undefined,
     }
-    e.target.value = ''
+    upsertAttachment(pending, target)
+
+    try {
+      const meta = await uploadAttachment(activeSessionId, file)
+      upsertAttachment(
+        {
+          ...pending,
+          id: meta.id,
+          status: 'ready',
+          size: meta.size,
+          contentType: meta.content_type || undefined,
+          url: meta.url,
+        },
+        target,
+      )
+      showToast(`已上传 ${file.name}`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '上传失败'
+      upsertAttachment({ ...pending, status: 'error', error: message }, target)
+      showToast(`上传失败：${file.name}`)
+    }
   }
 
   const handleSelectFavorite = (item: FavoriteItem) => {
     if (item.session_id !== activeSessionId) {
       setPendingFavoriteId(item.id)
-      switchSession(item.session_id)
+      handleSwitchSession(item.session_id)
       return
     }
     const index = favoriteIndexMap.get(item.id)
@@ -354,6 +646,12 @@ function App() {
   const handleWorkspaceSaved = (status: WorkspaceStatus) => {
     setWorkspaceState(status)
     setPcMode(status.configured)
+    if (status.configured && status.root) {
+      const projectId = upsertProjectFromRoot(status.root, status.name || undefined)
+      if (activeSessionId) {
+        assignSessionToProject(activeSessionId, projectId)
+      }
+    }
     showToast(
       status.configured
         ? `已绑定工作区：${status.name || status.root}`
@@ -386,6 +684,25 @@ function App() {
 
   // Keep Stop visible while Diff/Shell/Memory approval is open (stream may still be waiting).
   const inputBusy = isStreaming || awaitingApproval
+  const userCardExpanded = expandedUser !== null
+
+  const inputToolbar = {
+    onModelClick: () => setShowModelPicker(true),
+    onThisPc: handleThisPc,
+    onRemoveAttachment: (localKey: string) => {
+      if (expandedUser) {
+        setExpandedUser((prev) =>
+          prev ? { ...prev, attachedFiles: prev.attachedFiles.filter((a) => a.localKey !== localKey) } : prev,
+        )
+      } else {
+        setAttachedFiles((prev) => prev.filter((a) => a.localKey !== localKey))
+      }
+    },
+    pcMode,
+    modelName,
+    enterToSend: settings.enterToSend,
+    disabled: !activeSessionId || inputBusy,
+  }
 
   const inputProps = {
     value: inputValue,
@@ -394,10 +711,14 @@ function App() {
     onStop: stopStreaming,
     onAttach: handleUploadClick,
     onModelClick: () => setShowModelPicker(true),
+    onThisPc: handleThisPc,
+    pcMode,
     isStreaming: inputBusy,
-    disabled: !activeSessionId,
-    attachedFileName,
-    onRemoveAttachment: () => setAttachedFileName(null),
+    disabled: !activeSessionId || userCardExpanded,
+    dimmed: userCardExpanded,
+    attachments: attachedFiles,
+    onRemoveAttachment: (localKey: string) =>
+      setAttachedFiles((prev) => prev.filter((a) => a.localKey !== localKey)),
     modelName,
     enterToSend: settings.enterToSend,
   }
@@ -407,20 +728,16 @@ function App() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.json,.csv,.log,.py,.ts,.tsx,.js,.jsx,.html,.css,text/*"
+        accept="*/*"
         className="hidden"
         onChange={handleFileChange}
       />
 
       <Sidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        sessions={visibleSessions.map((s) => ({
-          id: s.id,
-          title: s.title,
-          updatedAt: s.updated_at,
-          isActive: s.id === activeSessionId,
-        }))}
+        projects={projects}
+        activeProjectId={activeProjectId}
+        sessions={sidebarSessions}
+        projectIdForSession={projectIdForSession}
         favoriteCount={favorites.length}
         collapsed={sidebarCollapsed}
         width={sidebarWidth}
@@ -435,12 +752,27 @@ function App() {
         }}
         onOpenSettings={() => setShowSettings(true)}
         onOpenSearch={() => setShowSearch(true)}
-        onSwitchWorkspace={switchWorkspace}
+        onActivateProject={(id) => {
+          void activateProject(id)
+        }}
         onOpenFavorites={() => setShowFavorites(true)}
-        onSwitchSession={switchSession}
-        onNewSession={handleNewSession}
+        onSwitchSession={handleSwitchSession}
+        onNewSession={(projectId) => {
+          void handleNewSession(projectId)
+        }}
+        onBrowseThisPc={() => setShowWorkspacePicker(true)}
+        onRemoveProject={removeProjectFromSidebar}
+        onTogglePin={togglePin}
+        onMarkRead={(id) => {
+          const session = sessions.find((s) => s.id === id)
+          markRead(id, session?.updated_at)
+        }}
+        onMarkUnread={markUnread}
+        onCopySessionId={handleCopySessionId}
+        onCopyTranscript={handleCopyTranscript}
         onDeleteSession={async (id) => {
           if (isStreaming) return
+          draftBySessionRef.current.delete(id)
           try {
             await deleteSession(id)
             showToast('已删除对话')
@@ -529,6 +861,7 @@ function App() {
                 />
                 <ChatInput
                   {...inputProps}
+                  onThisPc={undefined}
                   variant="center"
                   placeholder="Plan, Build, / for skills, @ for context"
                 />
@@ -551,43 +884,54 @@ function App() {
               currentIndex={currentIndex}
               isStreaming={isStreaming}
               awaitingApproval={awaitingApproval}
+              sessionId={activeSessionId}
+              expandedUserPairId={expandedUser?.pairId ?? null}
+              expandedDraft={expandedUser?.draft ?? ''}
+              expandedAttachments={expandedUser?.attachedFiles ?? []}
+              onExpandUser={handleExpandUser}
+              onExpandedDraftChange={handleExpandedDraftChange}
+              onExpandedSend={handleExpandedSend}
+              onExpandedAttach={handleExpandedAttach}
               onToggleFavorite={toggleFavorite}
               onRetry={retryLastFailed}
               onRetryToolStep={retryToolStep}
               setItemRef={setItemRef}
+              inputToolbar={inputToolbar}
             />
 
-            <div className="shrink-0 px-6 pb-4 pt-2" ref={approvalAreaRef}>
-              <DiffPanel
-                patches={pendingPatches}
-                busyId={patchBusyId}
-                onApply={applyPendingPatch}
-                onReject={rejectPendingPatch}
-                onApplyPartial={applyPartialPatch}
-                onRetry={retryPendingPatch}
-              />
-              <ShellPanel
-                shells={pendingShells}
-                busyId={shellBusyId}
-                onApply={applyPendingShell}
-                onReject={rejectPendingShell}
-                onRetry={retryPendingShell}
-              />
-              <MemoryPanel
-                memories={pendingMemories}
-                busyId={memoryBusyId}
-                onApply={applyPendingMemory}
-                onReject={rejectPendingMemory}
-              />
-              {awaitingApproval && (
-                <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-[var(--text-muted)]">
-                  等待你审批上方的改动、命令或记忆（Apply / Run / Reject）后，Agent 才会继续…
-                </p>
-              )}
-              <ChatInput {...inputProps} variant="bottom" placeholder="Send follow-up" />
-              <div className="mx-auto mt-2 flex max-w-3xl items-center">
-                <ThisPcButton active={pcMode} onClick={handleThisPc} />
+            <div
+              className="flex max-h-[42vh] shrink-0 flex-col overflow-hidden px-6 pb-4 pt-2"
+              ref={approvalAreaRef}
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <DiffPanel
+                  patches={pendingPatches}
+                  busyId={patchBusyId}
+                  onApply={applyPendingPatch}
+                  onReject={rejectPendingPatch}
+                  onApplyPartial={applyPartialPatch}
+                  onRetry={retryPendingPatch}
+                />
+                <ShellPanel
+                  shells={pendingShells}
+                  busyId={shellBusyId}
+                  onApply={applyPendingShell}
+                  onReject={rejectPendingShell}
+                  onRetry={retryPendingShell}
+                />
+                <MemoryPanel
+                  memories={pendingMemories}
+                  busyId={memoryBusyId}
+                  onApply={applyPendingMemory}
+                  onReject={rejectPendingMemory}
+                />
+                {awaitingApproval && (
+                  <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-[var(--text-muted)]">
+                    等待你审批上方的改动、命令或记忆（Apply / Run / Reject）后，Agent 才会继续…
+                  </p>
+                )}
               </div>
+              <ChatInput {...inputProps} variant="bottom" placeholder="Send follow-up" />
             </div>
           </>
         )}
@@ -616,14 +960,20 @@ function App() {
           onClose={() => setShowSettings(false)}
           onChange={handleSettingChange}
           onToggleSkill={toggleActiveSkill}
+          activeSessionId={activeSessionId}
+          sessions={sessions.map((s) => ({ id: s.id, title: s.title }))}
+          onOpenSession={(sessionId) => {
+            handleSwitchSession(sessionId)
+            setShowSettings(false)
+          }}
         />
 
         <SearchPanel
           isOpen={showSearch}
-          sessions={visibleSessions.map((s) => ({ id: s.id, title: s.title }))}
+          sessions={sessions.map((s) => ({ id: s.id, title: s.title }))}
           pairs={pairs}
           onClose={() => setShowSearch(false)}
-          onSelectSession={switchSession}
+          onSelectSession={handleSwitchSession}
           onSelectPair={(pairId) => {
             const index = pairs.findIndex((p) => p.id === pairId)
             if (index >= 0) goToIndex(index)

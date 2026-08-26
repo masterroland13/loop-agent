@@ -27,10 +27,19 @@
   --accent-bg: rgba(134, 59, 255, 0.14);
   --accent-solid: #863bff;
   --star: #e5a045;
-  --pair-highlight: #5b9fd4;
+  --pair-highlight: #ffffff;
   --pair-active-bg: rgba(255, 255, 255, 0.06);
   --pair-active-border: rgba(255, 255, 255, 0.22);
   --pair-active-accent: #ececec;
+
+  --status-ok: #34d399;
+  --status-ok-bg: rgba(16, 185, 129, 0.2);
+  --status-err: #f87171;
+  --status-err-bg: rgba(239, 68, 68, 0.2);
+  --status-warn: #fbbf24;
+  --status-warn-bg: rgba(245, 158, 11, 0.18);
+  --status-run: #38bdf8;
+  --status-run-bg: rgba(14, 165, 233, 0.2);
 
   --input-bg: #1a1a1a;
   --input-border: #333333;
@@ -38,16 +47,19 @@
 
   --sidebar-bg: #0e0e0e;
   --sidebar-border: #1f1f1f;
-  --sidebar-text: #eceff5;
-  --sidebar-muted: #9aa0ac;
-  --sidebar-hover: rgba(255, 255, 255, 0.05);
-  --sidebar-active: rgba(255, 255, 255, 0.08);
+  --sidebar-text: #f4f6fb;
+  --sidebar-muted: #c2c7d2;
+  --sidebar-hover: rgba(255, 255, 255, 0.07);
+  --sidebar-active: rgba(255, 255, 255, 0.12);
 
   --user-bubble: #1e1e1e;
   --agent-text: #dde2ea;
 
   --scrollbar: rgba(255, 255, 255, 0.12);
   --scrollbar-hover: rgba(255, 255, 255, 0.2);
+
+  --unread-dot: #3b82f6;
+  --unread-dot-ring: #0e0e0e;
 }
 
 [data-theme="light"] {
@@ -71,10 +83,19 @@
   --accent-bg: rgba(124, 58, 237, 0.08);
   --accent-solid: #863bff;
   --star: #d97706;
-  --pair-highlight: #3b82f6;
+  --pair-highlight: #ffffff;
   --pair-active-bg: rgba(17, 24, 39, 0.05);
   --pair-active-border: rgba(17, 24, 39, 0.16);
   --pair-active-accent: #111827;
+
+  --status-ok: #059669;
+  --status-ok-bg: rgba(5, 150, 105, 0.12);
+  --status-err: #dc2626;
+  --status-err-bg: rgba(220, 38, 38, 0.1);
+  --status-warn: #b45309;
+  --status-warn-bg: rgba(180, 83, 9, 0.1);
+  --status-run: #0284c7;
+  --status-run-bg: rgba(2, 132, 199, 0.1);
 
   --input-bg: #ffffff;
   --input-border: #e5e5e5;
@@ -83,15 +104,18 @@
   --sidebar-bg: #f7f7f8;
   --sidebar-border: #e5e5e5;
   --sidebar-text: #111111;
-  --sidebar-muted: #6b7280;
-  --sidebar-hover: rgba(0, 0, 0, 0.04);
-  --sidebar-active: rgba(0, 0, 0, 0.06);
+  --sidebar-muted: #4b5563;
+  --sidebar-hover: rgba(0, 0, 0, 0.05);
+  --sidebar-active: rgba(0, 0, 0, 0.09);
 
   --user-bubble: #f3f4f6;
   --agent-text: #3d3d3d;
 
   --scrollbar: rgba(0, 0, 0, 0.15);
   --scrollbar-hover: rgba(0, 0, 0, 0.25);
+
+  --unread-dot: #3b82f6;
+  --unread-dot-ring: #f7f7f8;
 }
 
 :root {
@@ -157,4 +181,28 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-menu-in {
+  animation: menu-in 0.14s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transform-origin: top left;
+}
+
+.unread-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: #3b82f6;
 }

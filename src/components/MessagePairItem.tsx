@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { MessagePair, ToolTraceItem } from '../types'
+import { ChevronIcon } from './ChevronIcon'
 import { Markdown } from './Markdown'
 import { ToolTimeline } from './ToolTimeline'
+import { UserMessageCard } from './UserMessageCard'
 
 interface MessagePairItemProps {
   pair: MessagePair
@@ -9,10 +11,27 @@ interface MessagePairItemProps {
   isActive: boolean
   isStreaming?: boolean
   awaitingApproval?: boolean
+  sessionId?: string | null
+  expandedUserPairId: string | null
+  expandedDraft: string
+  expandedAttachments?: import('../utils/chatAttachment').ChatAttachment[]
+  onExpandUser: (pairId: string, content: string) => void
+  onExpandedDraftChange: (value: string) => void
+  onExpandedSend: () => void
+  onExpandedAttach?: () => void
   onToggleFavorite: (id: string) => void
   onRetry?: (pairId: string) => void
   onRetryToolStep?: (pairId: string, item: ToolTraceItem) => void
   setItemRef: (index: number) => (element: HTMLDivElement | null) => void
+  inputToolbar?: {
+    onModelClick?: () => void
+    onThisPc?: () => void
+    onRemoveAttachment?: (localKey: string) => void
+    pcMode?: boolean
+    modelName?: string
+    enterToSend?: boolean
+    disabled?: boolean
+  }
 }
 
 export function MessagePairItem({
@@ -21,14 +40,29 @@ export function MessagePairItem({
   isActive,
   isStreaming,
   awaitingApproval,
+  sessionId,
+  expandedUserPairId,
+  expandedDraft,
+  expandedAttachments,
+  onExpandUser,
+  onExpandedDraftChange,
+  onExpandedSend,
+  onExpandedAttach,
   onToggleFavorite,
   onRetry,
   onRetryToolStep,
   setItemRef,
+  inputToolbar,
 }: MessagePairItemProps) {
   const [copied, setCopied] = useState(false)
   const hasTools = Boolean(pair.toolTrace && pair.toolTrace.length > 0)
-  const isLastAssistantEmpty = isStreaming && !pair.assistant.content && !hasTools
+  const goalText = pair.goal || pair.turnMeta?.goal
+  const previousGoal = pair.previousGoal
+  const goalChanged = Boolean(previousGoal && goalText && previousGoal !== goalText)
+  const checkpoint = pair.progressCheckpoint
+  const turnBusy = Boolean(isStreaming || pair.turnInProgress)
+  const isLastAssistantEmpty = turnBusy && !pair.assistant.content && !hasTools
+  const isUserExpanded = expandedUserPairId === pair.id
 
   const handleCopy = async () => {
     const text = `User:\n${pair.user.content}\n\nAgent:\n${pair.assistant.content}`
@@ -39,30 +73,86 @@ export function MessagePairItem({
 
   return (
     <div ref={setItemRef(index)} className="group relative mb-8 scroll-mt-6">
-      <div
-        className={[
-          'mb-6 rounded-[var(--radius-lg)] bg-[var(--user-bubble)] px-4 py-3.5 transition-[box-shadow,outline-color] duration-200',
-          isActive
-            ? 'outline outline-2 outline-[var(--pair-highlight)] outline-offset-2'
-            : 'outline outline-2 outline-transparent outline-offset-2',
-        ].join(' ')}
-      >
-        <p className="whitespace-pre-wrap text-[15px] font-[480] leading-[1.75] tracking-[0.02em] text-[var(--text-h)]">
-          {pair.user.content}
-        </p>
-      </div>
+      <UserMessageCard
+        pairId={pair.id}
+        content={pair.user.content}
+        index={index}
+        isActive={isActive}
+        isExpanded={isUserExpanded}
+        draft={expandedDraft}
+        attachments={expandedAttachments}
+        messageAttachments={pair.user.attachments}
+        sessionId={sessionId}
+        onExpand={onExpandUser}
+        onDraftChange={onExpandedDraftChange}
+        onSend={onExpandedSend}
+        onAttach={onExpandedAttach}
+        onModelClick={inputToolbar?.onModelClick}
+        onThisPc={inputToolbar?.onThisPc}
+        onRemoveAttachment={inputToolbar?.onRemoveAttachment}
+        pcMode={inputToolbar?.pcMode}
+        modelName={inputToolbar?.modelName}
+        enterToSend={inputToolbar?.enterToSend}
+        isStreaming={Boolean(isStreaming)}
+        disabled={Boolean(inputToolbar?.disabled)}
+      />
 
       <div className="relative pl-0.5">
+        {goalText ? (
+          <div
+            className="mb-2 max-w-full truncate rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] leading-5 text-[var(--text-h)]"
+            title={goalChanged ? `${previousGoal} → ${goalText}` : goalText}
+          >
+            <span className="mr-1.5 font-medium text-[var(--text-muted)]">
+              {goalChanged ? '目标 · 已变更' : '目标'}
+            </span>
+            {goalText}
+          </div>
+        ) : null}
+        {checkpoint ? (
+          <details className="group mb-2 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] leading-5 text-[var(--text-muted)]">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[13px] leading-5 text-[var(--text-h)] [&::-webkit-details-marker]:hidden">
+              <ChevronIcon className="shrink-0 text-[var(--text-muted)] rotate-0 group-open:rotate-90" />
+              <span className="min-w-0 flex-1 truncate text-[13px] font-normal leading-5 tracking-normal">
+                {`检查点 · ${
+                  checkpoint.reason === 'gate'
+                    ? '审批返回'
+                    : `已用 ${checkpoint.toolsSinceLast} 次工具`
+                } · 对照目标 · ${
+                  checkpoint.reply
+                    ? '有进度说明'
+                    : checkpoint.settled || !turnBusy
+                      ? '无进度说明'
+                      : '等待说明'
+                }`}
+              </span>
+            </summary>
+            {checkpoint.reply ? (
+              <p className="mt-2 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--text-h)]">
+                {checkpoint.reply}
+              </p>
+            ) : null}
+          </details>
+        ) : null}
         {hasTools && (
           <ToolTimeline
             items={pair.toolTrace!}
-            isStreaming={isStreaming}
+            isStreaming={turnBusy}
+            sessionId={sessionId}
             onRetryStep={
               onRetryToolStep
                 ? (item) => onRetryToolStep(pair.id, item)
                 : undefined
             }
           />
+        )}
+
+        {pair.turnInProgress && !isStreaming && hasTools && (
+          <div className="mt-2 text-sm text-[var(--text-muted)]">后台生成中…</div>
+        )}
+
+        {pair.failed && !pair.assistant.content && hasTools && (
+          <div className="mt-2 text-sm text-red-300/90">已停止</div>
         )}
 
         {isLastAssistantEmpty ? (
@@ -92,7 +182,7 @@ export function MessagePairItem({
           </div>
         ) : null}
 
-        {((!isLastAssistantEmpty && pair.assistant.content) || pair.failed) && (
+        {(hasTools || pair.failed || (!isLastAssistantEmpty && pair.assistant.content)) && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {pair.turnMeta && (
               <button
@@ -105,9 +195,10 @@ export function MessagePairItem({
                   setCopied(true)
                   setTimeout(() => setCopied(false), 1500)
                 }}
-                className="rounded-md px-1.5 py-1 font-mono text-[10px] font-normal tracking-wide text-[var(--text-dim)] hover:text-[var(--text-muted)]"
+                className="rounded-md px-1.5 py-1 font-mono text-[12px] font-normal leading-5 tracking-wide text-[var(--text-muted)] hover:text-[var(--text-h)]"
               >
                 {[
+                  pair.turnMeta.goal ? '目标' : null,
                   pair.turnMeta.model,
                   `${(pair.turnMeta.elapsed_ms / 1000).toFixed(1)}s`,
                   `~${pair.turnMeta.approx_prompt_tokens}+${pair.turnMeta.approx_completion_tokens}`,
@@ -133,6 +224,7 @@ export function MessagePairItem({
             >
               <path d="M12 3.5l2.472 5.008 5.528.804-4 3.898.944 5.504L12 16.27l-4.944 2.444.944-5.504-4-3.898 5.528-.804L12 3.5z" />
             </ActionBtn>
+            </div>
             {pair.failed && onRetry && !isStreaming && (
               <button
                 type="button"
@@ -142,12 +234,11 @@ export function MessagePairItem({
                   e.stopPropagation()
                   onRetry(pair.id)
                 }}
-                className="ml-1 rounded-md px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]"
+                className="rounded-md border border-red-400/30 px-2 py-1 text-xs text-red-300/90 hover:bg-red-400/10"
               >
                 重试
               </button>
             )}
-            </div>
           </div>
         )}
       </div>

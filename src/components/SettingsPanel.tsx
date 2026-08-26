@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   fetchAssets,
   fetchAudit,
@@ -12,13 +12,13 @@ import {
   updateLlmConfig,
   updateMemoryContent,
   type AssetsStatus,
-  type AuditEvent,
   type LlmConfig,
   type LlmTestResult,
   type SkillInfo,
   type ToolInfo,
 } from '../api/agent'
 import type { SettingsState } from '../hooks/useSettings'
+import { AuditPanel } from './AuditPanel'
 
 interface SettingsPanelProps {
   isOpen: boolean
@@ -26,28 +26,40 @@ interface SettingsPanelProps {
   onClose: () => void
   onChange: <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => void
   onToggleSkill: (skillId: string) => void
+  activeSessionId?: string | null
+  sessions?: { id: string; title: string }[]
+  onOpenSession?: (sessionId: string) => void
 }
 
 const SECTIONS = [
-  { id: 'model', label: '模型服务' },
-  { id: 'appearance', label: '外观' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'skills', label: '技能' },
-  { id: 'memory', label: '记忆' },
-  { id: 'cli', label: 'CLI' },
-  { id: 'assets', label: '资产' },
-  { id: 'audit', label: '审计' },
-  { id: 'shortcuts', label: '快捷键' },
-  { id: 'data', label: '数据' },
-  { id: 'about', label: '关于' },
+  { id: 'model', label: '模型服务', icon: 'model' },
+  { id: 'appearance', label: '外观', icon: 'appearance' },
+  { id: 'agent', label: 'Agent', icon: 'agent' },
+  { id: 'skills', label: '技能', icon: 'skills' },
+  { id: 'memory', label: '记忆', icon: 'memory' },
+  { id: 'cli', label: 'CLI', icon: 'cli' },
+  { id: 'assets', label: '资产', icon: 'assets' },
+  { id: 'audit', label: '审计', icon: 'audit' },
+  { id: 'shortcuts', label: '快捷键', icon: 'shortcuts' },
+  { id: 'data', label: '数据', icon: 'data' },
+  { id: 'about', label: '关于', icon: 'about' },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
+type SectionIcon = (typeof SECTIONS)[number]['icon']
 
-export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSkill }: SettingsPanelProps) {
+export function SettingsPanel({
+  isOpen,
+  settings,
+  onClose,
+  onChange,
+  onToggleSkill,
+  activeSessionId,
+  sessions = [],
+  onOpenSession,
+}: SettingsPanelProps) {
   const [activeSection, setActiveSection] = useState<SectionId>('model')
   const [assets, setAssets] = useState<AssetsStatus | null>(null)
-  const [audit, setAudit] = useState<AuditEvent[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [agentsMdExists, setAgentsMdExists] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -87,11 +99,10 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
     setLoadError(null)
     setSkillsLoading(true)
     setSkillsError(null)
-    Promise.all([fetchAssets(), fetchAudit(30), fetchSkills(), fetchLlmConfig(), fetchTools(), fetchMemoryContent()])
-      .then(([a, events, s, llm, t, mem]) => {
+    Promise.all([fetchAssets(), fetchSkills(), fetchLlmConfig(), fetchTools(), fetchMemoryContent()])
+      .then(([a, s, llm, t, mem]) => {
         if (cancelled) return
         setAssets(a)
-        setAudit(events)
         setSkills(s.skills)
         setAgentsMdExists(s.agents_md_exists)
         setLlmConfig(llm)
@@ -108,7 +119,7 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
       })
       .catch((err) => {
         if (cancelled) return
-        setLoadError(err instanceof Error ? err.message : '加载资产/审计/技能失败')
+        setLoadError(err instanceof Error ? err.message : '加载资产/技能失败')
       })
       .finally(() => {
         if (!cancelled) setSkillsLoading(false)
@@ -126,32 +137,35 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div className="relative flex h-[82vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-xl">
-        <nav className="flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--border-subtle)] bg-[var(--surface)]/30 p-2.5">
-          <div className="px-2 pb-2.5 pt-1.5 text-[15px] font-semibold text-[var(--text-h)]">设置</div>
+        <nav className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--border-subtle)] bg-[var(--surface)]/30 p-2">
+          <div className="px-2.5 pb-2 pt-1.5 text-[15px] font-semibold text-[var(--text-h)]">设置</div>
           {SECTIONS.map((s) => (
             <button
               key={s.id}
               type="button"
               onClick={() => setActiveSection(s.id)}
               className={[
-                'rounded-lg px-3 py-2 text-left text-[13.5px] transition-colors',
+                'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors',
                 s.id === activeSection
-                  ? 'bg-[var(--accent-bg)] font-medium text-[var(--accent)]'
-                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]',
+                  ? 'bg-[var(--surface-hover)] font-medium text-[var(--text-h)]'
+                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)]/70 hover:text-[var(--text-h)]',
               ].join(' ')}
             >
-              {s.label}
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center opacity-90">
+                <SettingsNavIcon name={s.icon} />
+              </span>
+              <span className="truncate">{s.label}</span>
             </button>
           ))}
         </nav>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-4">
-            <h2 className="text-base font-semibold text-[var(--text-h)]">{activeMeta.label}</h2>
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-3">
+            <h2 className="text-[15px] font-semibold text-[var(--text-h)]">{activeMeta.label}</h2>
             <button
               type="button"
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]"
             >
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
                 <path d="M6 18L18 6M6 6l12 12" />
@@ -159,7 +173,8 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            <div className="mx-auto w-full max-w-xl space-y-3">
             {activeSection === 'model' && (
               <>
                 <LlmProviderFields
@@ -215,16 +230,20 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
 
             {activeSection === 'appearance' && (
               <>
-            <div className="grid grid-cols-3 gap-2">
-              <Choice label="深色" active={settings.theme === 'dark'} onClick={() => onChange('theme', 'dark')} />
-              <Choice label="浅色" active={settings.theme === 'light'} onClick={() => onChange('theme', 'light')} />
-              <Choice label="跟随系统" active={settings.theme === 'system'} onClick={() => onChange('theme', 'system')} />
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              <Choice label="小字体" active={settings.fontSize === 'small'} onClick={() => onChange('fontSize', 'small')} />
-              <Choice label="中字体" active={settings.fontSize === 'medium'} onClick={() => onChange('fontSize', 'medium')} />
-              <Choice label="大字体" active={settings.fontSize === 'large'} onClick={() => onChange('fontSize', 'large')} />
-            </div>
+                <SettingsCard title="主题">
+                  <div className="grid grid-cols-3 gap-2">
+                    <Choice label="深色" active={settings.theme === 'dark'} onClick={() => onChange('theme', 'dark')} />
+                    <Choice label="浅色" active={settings.theme === 'light'} onClick={() => onChange('theme', 'light')} />
+                    <Choice label="跟随系统" active={settings.theme === 'system'} onClick={() => onChange('theme', 'system')} />
+                  </div>
+                </SettingsCard>
+                <SettingsCard title="字号">
+                  <div className="grid grid-cols-3 gap-2">
+                    <Choice label="小" active={settings.fontSize === 'small'} onClick={() => onChange('fontSize', 'small')} />
+                    <Choice label="中" active={settings.fontSize === 'medium'} onClick={() => onChange('fontSize', 'medium')} />
+                    <Choice label="大" active={settings.fontSize === 'large'} onClick={() => onChange('fontSize', 'large')} />
+                  </div>
+                </SettingsCard>
               </>
             )}
 
@@ -232,7 +251,7 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
               <>
             <Toggle
               label="自动压缩历史上下文"
-              description="超限时摘要旧轮次再进 loop"
+              description="超限时折叠旧轮次；本轮 Goal 会写入摘要并重新注入，不会被冲掉"
               checked={settings.autoCompress}
               onChange={(v) => onChange('autoCompress', v)}
             />
@@ -262,6 +281,10 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
               disabledTools={disabledTools}
               approvalTimeout={settings.approvalTimeoutSec ?? 300}
               onApprovalTimeout={(v) => onChange('approvalTimeoutSec', v)}
+              maxToolIters={settings.maxToolIters ?? 24}
+              onMaxToolIters={(v) => onChange('maxToolIters', v)}
+              checkpointEveryNTools={settings.checkpointEveryNTools ?? 4}
+              onCheckpointEveryNTools={(v) => onChange('checkpointEveryNTools', v)}
               onToggleTool={(name) => {
                 const next = disabledTools.includes(name)
                   ? disabledTools.filter((t) => t !== name)
@@ -403,24 +426,11 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
             )}
 
             {activeSection === 'audit' && (
-              <>
-            {audit.length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)]">暂无事件</p>
-            ) : (
-              <ul className="max-h-40 space-y-1.5 overflow-y-auto rounded-lg bg-[var(--surface)] px-3 py-2">
-                {audit.map((ev) => (
-                  <li key={ev.id} className="border-b border-[var(--border-subtle)] py-1.5 last:border-0">
-                    <div className="flex justify-between gap-2 text-[11px]">
-                      <span className="font-mono text-[var(--text-h)]">{ev.event_type}</span>
-                      <span className="shrink-0 text-[var(--text-dim)]">
-                        {new Date(ev.created_at).toLocaleString()}
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-              </>
+              <AuditPanel
+                activeSessionId={activeSessionId}
+                sessions={sessions}
+                onOpenSession={onOpenSession}
+              />
             )}
 
             {activeSection === 'shortcuts' && (
@@ -471,18 +481,20 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
                 <button
                   type="button"
                   onClick={() => {
-                    const payload = JSON.stringify(
-                      { exportedAt: new Date().toISOString(), audit },
-                      null,
-                      2,
-                    )
-                    const blob = new Blob([payload], { type: 'application/json' })
-                    const url = URL.createObjectURL(blob)
-                    const a = document.createElement('a')
-                    a.href = url
-                    a.download = `hal-agent-audit-${Date.now()}.json`
-                    a.click()
-                    URL.revokeObjectURL(url)
+                    void fetchAudit(100).then((events) => {
+                      const payload = JSON.stringify(
+                        { exportedAt: new Date().toISOString(), audit: events },
+                        null,
+                        2,
+                      )
+                      const blob = new Blob([payload], { type: 'application/json' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = `hal-agent-audit-${Date.now()}.json`
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    })
                   }}
                   className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
                 >
@@ -505,9 +517,10 @@ export function SettingsPanel({ isOpen, settings, onClose, onChange, onToggleSki
             </div>
               </>
             )}
+            </div>
           </div>
 
-          <div className="border-t border-[var(--border-subtle)] px-5 py-3 text-center text-xs text-[var(--text-muted)]">
+          <div className="border-t border-[var(--border-subtle)] px-5 py-2.5 text-center text-[11px] text-[var(--text-dim)]">
             外观存浏览器；Agent 开关与模型服务覆盖同步到后端
           </div>
         </div>
@@ -521,12 +534,20 @@ function AgentGovernanceFields({
   disabledTools,
   approvalTimeout,
   onApprovalTimeout,
+  maxToolIters,
+  onMaxToolIters,
+  checkpointEveryNTools,
+  onCheckpointEveryNTools,
   onToggleTool,
 }: {
   tools: ToolInfo[]
   disabledTools: string[]
   approvalTimeout: number
   onApprovalTimeout: (value: number) => void
+  maxToolIters: number
+  onMaxToolIters: (value: number) => void
+  checkpointEveryNTools: number
+  onCheckpointEveryNTools: (value: number) => void
   onToggleTool: (name: string) => void
 }) {
   return (
@@ -545,6 +566,54 @@ function AgentGovernanceFields({
           onChange={(e) => onApprovalTimeout(Number(e.target.value))}
           className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
         />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
+        <div>
+          <div className="text-sm text-[var(--text-h)]">工具轮次上限</div>
+          <div className="text-xs text-[var(--text-muted)]">
+            {maxToolIters} 轮 · 达上限后尝试总结而非直接中止
+          </div>
+        </div>
+        <input
+          type="range"
+          min={8}
+          max={64}
+          step={1}
+          value={maxToolIters}
+          onChange={(e) => onMaxToolIters(Number(e.target.value))}
+          className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
+        />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
+        <div>
+          <div className="text-sm text-[var(--text-h)]">进度检查点</div>
+          <div className="text-xs text-[var(--text-muted)]">
+            {checkpointEveryNTools === 0
+              ? '仅审批 gate 返回后对照目标'
+              : `每 ${checkpointEveryNTools} 次工具 · 强制对照目标`}
+          </div>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={16}
+          step={1}
+          value={checkpointEveryNTools}
+          onChange={(e) => onCheckpointEveryNTools(Number(e.target.value))}
+          className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
+        />
+      </div>
+
+      <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
+        <div className="text-sm text-[var(--text-h)]">本轮目标（Turn Goal）</div>
+        <div className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+          每轮从用户消息自动提取目标并注入 loop；短回复如「好的 / 继续」会继承上一轮实质目标。消息旁显示「目标」条。目标变更会写入审计，并在目标条标「已变更」。
+        </div>
+        <div className="mt-2 text-xs leading-relaxed text-[var(--text-dim)]">
+          检查点（F2）：每 N 次工具或审批返回后，loop 要求模型说明相对目标的进度 / 阻塞 / 下一步；说明会出现在消息旁「检查点」条（可折叠）。
+        </div>
       </div>
 
       <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
@@ -815,44 +884,56 @@ function LlmProviderFields({
       : models
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm text-[var(--text-h)]">API Key</div>
-          <span className="text-[10px] text-[var(--text-muted)]">
-            {config.api_key_configured ? '已保存（明文不回显）' : '未配置'}
-          </span>
+    <div className="space-y-3">
+      <SettingsCard title="连接" hint={config.api_key_configured ? '密钥已保存（不回显）' : '尚未配置密钥'}>
+        <label className="block">
+          <span className="mb-1 block text-[12px] text-[var(--text-muted)]">API Key</span>
+          <input
+            type="password"
+            autoComplete="off"
+            value={keyDraft}
+            onChange={(e) => onKeyDraft(e.target.value)}
+            placeholder={config.api_key_configured ? '已保存。输入新密钥以替换' : '粘贴 API Key'}
+            className={fieldClass}
+          />
+        </label>
+        <label className="mt-3 block">
+          <span className="mb-1 block text-[12px] text-[var(--text-muted)]">Base URL</span>
+          <input
+            type="url"
+            autoComplete="off"
+            value={urlDraft}
+            onChange={(e) => onUrlDraft(e.target.value)}
+            placeholder="https://api.example.com/v1"
+            className={fieldClass}
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-dim)]">
+            OpenAI 兼容网关（含 /v1）。保存写入 backend/.env 并立即生效。
+          </p>
+        </label>
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-3">
+          <div className="min-w-0">
+            <div className="text-[13px] text-[var(--text-h)]">连接测试</div>
+            {testResult && (
+              <p className={`mt-0.5 text-[11px] ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                {testResult.ok
+                  ? `正常 · ${testResult.latency_ms}ms · ${testResult.model_count} 个模型`
+                  : `失败：${testResult.error || '未知错误'}`}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={testing}
+            onClick={() => void onTest()}
+            className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+          >
+            {testing ? '测试中…' : '测试连接'}
+          </button>
         </div>
-        <input
-          type="password"
-          autoComplete="off"
-          value={keyDraft}
-          onChange={(e) => onKeyDraft(e.target.value)}
-          placeholder={config.api_key_configured ? '已保存密钥。输入新密钥以替换' : '粘贴 API Key'}
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
-        />
-      </div>
+      </SettingsCard>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 text-sm text-[var(--text-h)]">Base URL</div>
-        <input
-          type="url"
-          autoComplete="off"
-          value={urlDraft}
-          onChange={(e) => onUrlDraft(e.target.value)}
-          placeholder="https://api.example.com/v1"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
-        />
-        <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-          OpenAI 兼容网关地址（含 /v1）。保存后写入 backend/.env 并立即生效。
-        </p>
-      </div>
-
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm text-[var(--text-h)]">默认模型</div>
-          {modelsLoading && <span className="text-[10px] text-[var(--text-muted)]">拉取列表…</span>}
-        </div>
+      <SettingsCard title="默认模型" hint={modelsLoading ? '拉取列表…' : undefined}>
         <div className="flex flex-wrap gap-1.5">
           {modelChoices.map((m) => (
             <button
@@ -860,7 +941,7 @@ function LlmProviderFields({
               type="button"
               onClick={() => onModelDraft(m)}
               className={[
-                'rounded-full px-3 py-1 text-xs transition-colors',
+                'rounded-full px-2.5 py-1 text-[12px] transition-colors',
                 m === modelDraft
                   ? 'bg-[var(--accent-bg)] text-[var(--text-h)] ring-1 ring-[var(--accent)]'
                   : 'bg-[var(--bg)] text-[var(--text-muted)] hover:text-[var(--text-h)]',
@@ -870,7 +951,7 @@ function LlmProviderFields({
             </button>
           ))}
           {modelChoices.length === 0 && !modelsLoading && (
-            <span className="text-xs text-[var(--text-muted)]">网关未返回模型列表，可在下方手填。</span>
+            <span className="text-[12px] text-[var(--text-muted)]">网关未返回列表，可手填下方。</span>
           )}
         </div>
         <input
@@ -879,17 +960,16 @@ function LlmProviderFields({
           value={modelDraft}
           onChange={(e) => onModelDraft(e.target.value)}
           placeholder="模型 id，例如 deepseek-v4-flash"
-          className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+          className={`mt-2.5 ${fieldClass}`}
         />
-      </div>
+      </SettingsCard>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 text-sm text-[var(--text-h)]">生成参数</div>
+      <SettingsCard title="生成参数">
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm text-[var(--text-h)]">Temperature</div>
-              <div className="text-xs text-[var(--text-muted)]">{tempDraft.toFixed(2)} · 越高越发散</div>
+              <div className="text-[13px] text-[var(--text-h)]">Temperature</div>
+              <div className="text-[11px] text-[var(--text-muted)]">{tempDraft.toFixed(2)} · 越高越发散</div>
             </div>
             <input
               type="range"
@@ -903,8 +983,8 @@ function LlmProviderFields({
           </div>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm text-[var(--text-h)]">Max Tokens</div>
-              <div className="text-xs text-[var(--text-muted)]">单次回复最大长度</div>
+              <div className="text-[13px] text-[var(--text-h)]">Max Tokens</div>
+              <div className="text-[11px] text-[var(--text-muted)]">单次回复最大长度</div>
             </div>
             <input
               type="number"
@@ -917,33 +997,9 @@ function LlmProviderFields({
             />
           </div>
         </div>
-      </div>
+      </SettingsCard>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm text-[var(--text-h)]">连接测试</div>
-            <div className="text-xs text-[var(--text-muted)]">用当前配置 ping 网关的模型列表</div>
-          </div>
-          <button
-            type="button"
-            disabled={testing}
-            onClick={() => void onTest()}
-            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
-          >
-            {testing ? '测试中…' : '测试连接'}
-          </button>
-        </div>
-        {testResult && (
-          <p className={`mt-2 text-xs ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-            {testResult.ok
-              ? `连接正常 · ${testResult.latency_ms}ms · ${testResult.model_count} 个模型`
-              : `连接失败：${testResult.error || '未知错误'}`}
-          </p>
-        )}
-      </div>
-
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pt-1">
         <button
           type="button"
           disabled={saving || !dirty}
@@ -967,6 +1023,124 @@ function LlmProviderFields({
   )
 }
 
+const fieldClass =
+  'w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]'
+
+function SettingsCard({
+  title,
+  hint,
+  children,
+}: {
+  title: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <h3 className="text-[13px] font-medium text-[var(--text-h)]">{title}</h3>
+        {hint && <span className="text-[10px] text-[var(--text-muted)]">{hint}</span>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function SettingsNavIcon({ name }: { name: SectionIcon }) {
+  const common = {
+    xmlns: 'http://www.w3.org/2000/svg',
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.75,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className: 'h-4 w-4',
+    'aria-hidden': true as const,
+  }
+  switch (name) {
+    case 'model':
+      return (
+        <svg {...common}>
+          <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+          <path d="M3.3 7L12 12l8.7-5M12 22V12" />
+        </svg>
+      )
+    case 'appearance':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3v18" />
+          <path d="M12 3a9 9 0 010 18" fill="currentColor" stroke="none" opacity={0.35} />
+        </svg>
+      )
+    case 'agent':
+      return (
+        <svg {...common}>
+          <path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3z" />
+        </svg>
+      )
+    case 'skills':
+      return (
+        <svg {...common}>
+          <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" />
+        </svg>
+      )
+    case 'memory':
+      return (
+        <svg {...common}>
+          <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+        </svg>
+      )
+    case 'cli':
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M7 9l3 3-3 3M12 15h5" />
+        </svg>
+      )
+    case 'assets':
+      return (
+        <svg {...common}>
+          <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+        </svg>
+      )
+    case 'audit':
+      return (
+        <svg {...common}>
+          <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+          <rect x="9" y="3" width="6" height="4" rx="1" />
+          <path d="M9 12h6M9 16h4" />
+        </svg>
+      )
+    case 'shortcuts':
+      return (
+        <svg {...common}>
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
+        </svg>
+      )
+    case 'data':
+      return (
+        <svg {...common}>
+          <ellipse cx="12" cy="5" rx="8" ry="3" />
+          <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+          <path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+        </svg>
+      )
+    case 'about':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 16v-4M12 8h.01" />
+        </svg>
+      )
+    default:
+      return null
+  }
+}
+
 function Toggle({
   label,
   description,
@@ -981,10 +1155,10 @@ function Toggle({
   disabled?: boolean
 }) {
   return (
-    <div className={`mb-3 flex items-center justify-between gap-3 ${disabled ? 'opacity-60' : ''}`}>
+    <div className={`mb-2.5 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 ${disabled ? 'opacity-60' : ''}`}>
       <div>
-        <div className="text-sm text-[var(--text-h)]">{label}</div>
-        {description && <div className="text-xs text-[var(--text-muted)]">{description}</div>}
+        <div className="text-[13px] text-[var(--text-h)]">{label}</div>
+        {description && <div className="text-[11px] text-[var(--text-muted)]">{description}</div>}
       </div>
       <button
         type="button"

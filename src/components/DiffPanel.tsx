@@ -10,24 +10,57 @@ interface DiffPanelProps {
   busyId?: string | null
 }
 
+function isActionablePatch(status: PendingPatch['status']) {
+  return (
+    status === 'pending' ||
+    status === 'rejected' ||
+    status === 'failed' ||
+    status === 'timeout' ||
+    status === 'partial'
+  )
+}
+
 export function DiffPanel({ patches, onApply, onReject, onApplyPartial, onRetry, busyId }: DiffPanelProps) {
-  // Keep rejected visible (Retry); hide only cancelled noise.
   const visible = patches.filter((p) => p.status !== 'cancelled')
+  const actionable = visible.filter((p) => isActionablePatch(p.status))
+  const applied = visible.filter((p) => p.status === 'applied')
+  const [showApplied, setShowApplied] = useState(false)
   if (visible.length === 0) return null
 
+  const renderCard = (patch: PendingPatch) => (
+    <DiffCard
+      key={patch.id}
+      patch={patch}
+      busy={busyId === patch.id}
+      onApply={() => onApply(patch.id)}
+      onReject={() => onReject(patch.id)}
+      onApplyPartial={onApplyPartial ? (ids) => onApplyPartial(patch.id, ids) : undefined}
+      onRetry={onRetry ? () => onRetry(patch.id) : undefined}
+    />
+  )
+
   return (
-    <div className="mx-auto mb-3 w-full max-w-3xl space-y-3">
-      {visible.map((patch) => (
-        <DiffCard
-          key={patch.id}
-          patch={patch}
-          busy={busyId === patch.id}
-          onApply={() => onApply(patch.id)}
-          onReject={() => onReject(patch.id)}
-          onApplyPartial={onApplyPartial ? (ids) => onApplyPartial(patch.id, ids) : undefined}
-          onRetry={onRetry ? () => onRetry(patch.id) : undefined}
-        />
-      ))}
+    <div className="mx-auto mb-3 w-full max-w-3xl">
+      <div className="max-h-[min(36vh,280px)] space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
+        {actionable.map(renderCard)}
+        {applied.length > 0 && (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)]">
+            <button
+              type="button"
+              onClick={() => setShowApplied((v) => !v)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-h)]"
+            >
+              <span className="text-[var(--text-dim)]">{showApplied ? '▾' : '▸'}</span>
+              <span>已应用 {applied.length} 处改动</span>
+            </button>
+            {showApplied && (
+              <div className="space-y-2 border-t border-[var(--border-subtle)] px-2 pb-2 pt-2">
+                {applied.map(renderCard)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -81,7 +114,7 @@ function DiffCard({
     return new Set(Array.from({ length: count }, (_, i) => i))
   })
   const hunks = parseHunks(patch.unified_diff || '')
-  const hasHunks = hunks.length > 0
+  const hasHunks = hunks.length > 0 && !patch.is_delete
   const allSelected = selectedHunks.size === hunks.length
   const noneSelected = selectedHunks.size === 0
   const statusLabel =
@@ -132,7 +165,7 @@ function DiffCard({
           className="min-w-0 flex-1 truncate text-left font-mono text-xs text-[var(--text-h)]"
         >
           <span className="mr-1 text-[var(--text-dim)]">{expanded ? '▾' : '▸'}</span>
-          {patch.is_new_file ? '新建 ' : '修改 '}
+          {patch.is_delete ? '删除文件 ' : patch.is_new_file ? '新建 ' : '修改 '}
           {patch.path}
           <span
             className={[
@@ -270,3 +303,4 @@ function DiffCard({
     </div>
   )
 }
+

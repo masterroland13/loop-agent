@@ -1,16 +1,28 @@
 export type Role = 'user' | 'assistant'
 
+export interface AttachmentMeta {
+  id: string
+  filename: string
+  size: number
+  content_type?: string | null
+  url: string
+}
+
 export interface Message {
   id: string
   role: Role
   content: string
   createdAt: number
+  attachments?: AttachmentMeta[]
 }
 
 export interface ToolTraceItem {
   name: string
   status: 'running' | 'done' | 'error'
   detail?: string
+  /** file:turns/... spilled under session.data_path when payload > 8KB */
+  fullRef?: string
+  truncated?: boolean
 }
 
 export interface PendingPatch {
@@ -18,6 +30,7 @@ export interface PendingPatch {
   path: string
   unified_diff: string
   is_new_file: boolean
+  is_delete?: boolean
   status: 'pending' | 'applied' | 'rejected' | 'timeout' | 'failed' | 'cancelled' | 'partial'
   error?: string
   hunk_count?: number
@@ -55,6 +68,8 @@ export interface TurnMeta {
   compressed: boolean
   memory_injected: boolean
   message_id: string
+  /** Sticky turn goal injected into the agent loop. */
+  goal?: string
 }
 
 export interface MessagePair {
@@ -66,6 +81,21 @@ export interface MessagePair {
   toolTrace?: ToolTraceItem[]
   /** Last turn failed (stream error); enables retry. */
   failed?: boolean
-  /** Per-turn meta from SSE (not persisted). */
+  /** Per-turn meta from SSE / assistant.summary. */
   turnMeta?: TurnMeta
+  /** Live goal from meta/turn_goal before turn_meta arrives. */
+  goal?: string
+  /** Prior sticky goal when this turn changed intent (F8). */
+  previousGoal?: string
+  /** Latest progress checkpoint hint (interval or after gate). */
+  progressCheckpoint?: {
+    toolsSinceLast: number
+    reason: string
+    reply?: string
+    /** True when model skipped mid-loop narration (or turn settled without reply). */
+    settled?: boolean
+  }
+  /** True when assistant row exists but turn_meta not finalized (refresh recovery). */
+  turnInProgress?: boolean
 }
+

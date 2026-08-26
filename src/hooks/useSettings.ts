@@ -12,6 +12,8 @@ export interface SettingsState {
   confirmMemory: boolean
   activeSkills: string[]
   approvalTimeoutSec: number
+  maxToolIters: number
+  checkpointEveryNTools: number
   enterToSend: boolean
   shortcuts: boolean
   dataDir: string
@@ -28,6 +30,8 @@ export const defaultSettings: SettingsState = {
   confirmMemory: true,
   activeSkills: [],
   approvalTimeoutSec: 300,
+  maxToolIters: 24,
+  checkpointEveryNTools: 4,
   enterToSend: true,
   shortcuts: true,
   dataDir: '',
@@ -39,6 +43,8 @@ const AGENT_KEYS = new Set<keyof SettingsState>([
   'contextLimit',
   'activeSkills',
   'approvalTimeoutSec',
+  'maxToolIters',
+  'checkpointEveryNTools',
 ])
 
 export function loadSettings(): SettingsState {
@@ -74,6 +80,8 @@ export function useSettings() {
     contextLimit: settings.contextLimit,
     activeSkills: settings.activeSkills,
     approvalTimeoutSec: settings.approvalTimeoutSec,
+    maxToolIters: settings.maxToolIters,
+    checkpointEveryNTools: settings.checkpointEveryNTools,
   })
 
   useEffect(() => {
@@ -90,6 +98,8 @@ export function useSettings() {
             contextLimit: remote.context_limit,
             activeSkills: Array.isArray(remote.active_skills) ? remote.active_skills : [],
             approvalTimeoutSec: remote.approval_timeout_sec ?? 300,
+            maxToolIters: remote.max_tool_iters ?? 24,
+            checkpointEveryNTools: remote.checkpoint_every_n_tools ?? 4,
           }
           prevAgent.current = {
             autoCompress: next.autoCompress,
@@ -97,6 +107,8 @@ export function useSettings() {
             contextLimit: next.contextLimit,
             activeSkills: next.activeSkills,
             approvalTimeoutSec: next.approvalTimeoutSec,
+            maxToolIters: next.maxToolIters,
+            checkpointEveryNTools: next.checkpointEveryNTools,
           }
           return next
         })
@@ -126,6 +138,8 @@ export function useSettings() {
       settings.confirmMemory !== prevAgent.current.confirmMemory ||
       settings.contextLimit !== prevAgent.current.contextLimit ||
       settings.approvalTimeoutSec !== prevAgent.current.approvalTimeoutSec ||
+      settings.maxToolIters !== prevAgent.current.maxToolIters ||
+      settings.checkpointEveryNTools !== prevAgent.current.checkpointEveryNTools ||
       settings.activeSkills.length !== prevAgent.current.activeSkills.length ||
       settings.activeSkills.some((id, i) => id !== prevAgent.current.activeSkills[i])
 
@@ -137,6 +151,8 @@ export function useSettings() {
       contextLimit: settings.contextLimit,
       activeSkills: settings.activeSkills,
       approvalTimeoutSec: settings.approvalTimeoutSec,
+      maxToolIters: settings.maxToolIters,
+      checkpointEveryNTools: settings.checkpointEveryNTools,
     }
 
     updateAgentSettings({
@@ -145,6 +161,8 @@ export function useSettings() {
       context_limit: settings.contextLimit,
       active_skills: settings.activeSkills,
       approval_timeout_sec: settings.approvalTimeoutSec,
+      max_tool_iters: settings.maxToolIters,
+      checkpoint_every_n_tools: settings.checkpointEveryNTools,
     }).catch(() => {
       // ignore transient sync errors
     })

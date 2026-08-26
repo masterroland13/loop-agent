@@ -1,22 +1,43 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
-  type Workspace,
+  UNBOUND_PROJECT_ID,
+  type Project,
 } from '../hooks/useWorkspaces'
 import { formatRelativeTime } from '../utils/time'
+import { ChevronIcon } from './ChevronIcon'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import {
+  MenuBellIcon,
+  MenuCopyIcon,
+  MenuHashIcon,
+  MenuPencilIcon,
+  MenuPinIcon,
+  MenuSidebarRemoveIcon,
+  MenuTranscriptIcon,
+  MenuTrashIcon,
+  SessionPinIcon,
+  UnreadDot,
+} from './ContextMenuIcons'
+import { OpenWorkspaceMenu } from './OpenWorkspaceMenu'
 
 interface ChatSession {
   id: string
   title: string
   updatedAt?: string
   isActive?: boolean
+  isPinned?: boolean
+  isUnread?: boolean
+  showUnreadDot?: boolean
 }
 
 interface SidebarProps {
-  workspaces: Workspace[]
-  activeWorkspaceId: string
+  projects: Project[]
+  activeProjectId: string
+  /** All sessions; Sidebar groups by projectIdForSession. */
   sessions: ChatSession[]
+  projectIdForSession: (sessionId: string) => string
   favoriteCount: number
   collapsed: boolean
   width: number
@@ -28,18 +49,28 @@ interface SidebarProps {
   onToggleTheme: () => void
   onOpenSettings: () => void
   onOpenSearch: () => void
-  onSwitchWorkspace: (id: string) => void
   onOpenFavorites: () => void
+  onActivateProject: (projectId: string) => void
   onSwitchSession: (id: string) => void
-  onNewSession: () => void
+  /** Create a chat in the given project (defaults to active). */
+  onNewSession: (projectId?: string) => void
   onDeleteSession: (id: string) => void
   onRenameSession: (id: string, newTitle: string) => void | Promise<void>
+  /** Open the full This PC directory browser (WorkspacePicker). */
+  onBrowseThisPc: () => void
+  onRemoveProject?: (projectId: string) => void
+  onTogglePin?: (sessionId: string) => void
+  onMarkRead?: (sessionId: string) => void
+  onMarkUnread?: (sessionId: string) => void
+  onCopySessionId?: (sessionId: string) => void
+  onCopyTranscript?: (sessionId: string) => void | Promise<void>
 }
 
 export function Sidebar({
-  workspaces,
-  activeWorkspaceId,
+  projects,
+  activeProjectId,
   sessions,
+  projectIdForSession,
   favoriteCount,
   collapsed,
   width,
@@ -51,16 +82,34 @@ export function Sidebar({
   onToggleTheme,
   onOpenSettings,
   onOpenSearch,
-  onSwitchWorkspace,
   onOpenFavorites,
+  onActivateProject,
   onSwitchSession,
   onNewSession,
   onDeleteSession,
   onRenameSession,
+  onBrowseThisPc,
+  onRemoveProject,
+  onTogglePin,
+  onMarkRead,
+  onMarkUnread,
+  onCopySessionId,
+  onCopyTranscript,
 }: SidebarProps) {
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(workspaces.map((w) => [w.id, w.id === activeWorkspaceId])),
-  )
+  const [openWorkspaceMenu, setOpenWorkspaceMenu] = useState(false)
+  const openWorkspaceBtnRef = useRef<HTMLButtonElement>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    items: ContextMenuItem[]
+  } | null>(null)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {}
+    for (const p of projects) {
+      init[p.id] = p.id === activeProjectId
+    }
+    return init
+  })
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
@@ -68,15 +117,32 @@ export function Sidebar({
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(width)
 
+  // Keep newly seen projects expanded when they become active.
+  useEffect(() => {
+    setExpanded((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const p of projects) {
+        if (next[p.id] === undefined) {
+          next[p.id] = p.id === activeProjectId
+          changed = true
+        }
+      }
+      if (activeProjectId && !next[activeProjectId]) {
+        next[activeProjectId] = true
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [projects, activeProjectId])
+
   useEffect(() => {
     if (!isResizing) return
-
     const onMove = (e: MouseEvent) => {
       const next = dragStartWidth.current + (e.clientX - dragStartX.current)
       onWidthChange(Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, next)))
     }
     const onUp = () => setIsResizing(false)
-
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     window.addEventListener('mousemove', onMove)
@@ -89,10 +155,35 @@ export function Sidebar({
     }
   }, [isResizing, onWidthChange])
 
-  const beginRename = (id: string, currentTitle: string) => {
+  const sessionsByProject = useMemo(() => {
+    const map: Record<string, ChatSession[]> = {}
+    for (const p of projects) map[p.id] = []
+    for (const s of sessions) {
+      const pid = projectIdForSession(s.id)
+      if (!map[pid]) map[pid] = []
+      map[pid].push(s)
+    }
+    for (const pid of Object.keys(map)) {
+      map[pid].sort((a, b) => {
+        const aPinned = a.isPinned ? 1 : 0
+        const bPinned = b.isPinned ? 1 : 0
+        if (aPinned !== bPinned) return bPinned - aPinned
+        const ta = a.updatedAt || ''
+        const tb = b.updatedAt || ''
+        return tb.localeCompare(ta)
+      })
+    }
+    return map
+  }, [projects, sessions, projectIdForSession])
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  const beginRename = (id: string, title: string) => {
     setConfirmDeleteId(null)
     setRenamingId(id)
-    setRenameDraft(currentTitle)
+    setRenameDraft(title)
   }
 
   const commitRename = async () => {
@@ -109,8 +200,104 @@ export function Sidebar({
     setRenameDraft('')
   }
 
-  const toggleFolder = (id: string) => {
-    setExpandedFolders((prev) => ({ ...prev, [id]: !prev[id] }))
+  const openProjectContextMenu = (e: React.MouseEvent, project: Project) => {
+    e.preventDefault()
+    if (!onRemoveProject) return
+    const items: ContextMenuItem[] = [
+      {
+        type: 'item',
+        id: 'remove',
+        label: 'Remove from Sidebar',
+        icon: <MenuSidebarRemoveIcon />,
+        disabled: project.id === UNBOUND_PROJECT_ID || !project.root,
+        onClick: () => onRemoveProject(project.id),
+      },
+    ]
+    setContextMenu({ x: e.clientX, y: e.clientY, items })
+  }
+
+  const openSessionContextMenu = (e: React.MouseEvent, chat: ChatSession) => {
+    e.preventDefault()
+    const unread = chat.isUnread ?? false
+    const items: ContextMenuItem[] = [
+      ...(onTogglePin
+        ? [
+            {
+              type: 'item' as const,
+              id: 'pin',
+              label: chat.isPinned ? 'Unpin' : 'Pin',
+              icon: <MenuPinIcon />,
+              onClick: () => onTogglePin(chat.id),
+            },
+          ]
+        : []),
+      {
+        type: 'item',
+        id: 'rename',
+        label: 'Rename',
+        icon: <MenuPencilIcon />,
+        onClick: () => beginRename(chat.id, chat.title),
+      },
+      ...(onMarkRead && onMarkUnread
+        ? [
+            {
+              type: 'item' as const,
+              id: 'read-state',
+              label: unread ? 'Mark as Read' : 'Mark as Unread',
+              icon: <MenuBellIcon withDot={!unread} />,
+              onClick: () => (unread ? onMarkRead(chat.id) : onMarkUnread(chat.id)),
+            },
+          ]
+        : []),
+      { type: 'separator' },
+      ...(onCopySessionId || onCopyTranscript
+        ? [
+            {
+              type: 'submenu' as const,
+              id: 'copy',
+              label: 'Copy',
+              icon: <MenuCopyIcon />,
+              children: [
+                ...(onCopySessionId
+                  ? [
+                      {
+                        type: 'item' as const,
+                        id: 'copy-id',
+                        label: 'Copy Agent ID',
+                        icon: <MenuHashIcon />,
+                        onClick: () => onCopySessionId(chat.id),
+                      },
+                    ]
+                  : []),
+                ...(onCopyTranscript
+                  ? [
+                      {
+                        type: 'item' as const,
+                        id: 'copy-transcript',
+                        label: 'Copy Transcript',
+                        icon: <MenuTranscriptIcon />,
+                        onClick: () => {
+                          void onCopyTranscript(chat.id)
+                        },
+                      },
+                    ]
+                  : []),
+              ],
+            },
+            { type: 'separator' as const },
+          ]
+        : []),
+      {
+        type: 'item',
+        id: 'delete',
+        label: 'Delete',
+        icon: <MenuTrashIcon />,
+        danger: true,
+        disabled: isStreaming,
+        onClick: () => setConfirmDeleteId(chat.id),
+      },
+    ]
+    setContextMenu({ x: e.clientX, y: e.clientY, items })
   }
 
   if (collapsed) {
@@ -118,9 +305,9 @@ export function Sidebar({
       <aside className="flex h-dvh w-12 shrink-0 flex-col items-center border-r border-[var(--sidebar-border)] bg-[var(--sidebar-bg)] py-3">
         <button
           type="button"
-          onClick={onNewSession}
+          onClick={() => onNewSession()}
           disabled={isLoading || isStreaming}
-          title="New Agent"
+          title="New Chat"
           className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)] disabled:opacity-40"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
@@ -128,10 +315,7 @@ export function Sidebar({
           </svg>
         </button>
         <div className="mt-auto flex flex-col items-center gap-1">
-          <FooterIconButton
-            title={isDark ? '切换浅色模式' : '切换深色模式'}
-            onClick={onToggleTheme}
-          >
+          <FooterIconButton title={isDark ? '切换浅色模式' : '切换深色模式'} onClick={onToggleTheme}>
             {isDark ? <SunIcon /> : <MoonIcon />}
           </FooterIconButton>
           <FooterIconButton title="设置" onClick={onOpenSettings}>
@@ -152,67 +336,119 @@ export function Sidebar({
       className="relative flex h-dvh shrink-0 flex-col border-r border-[var(--sidebar-border)] bg-[var(--sidebar-bg)]"
       style={{ width }}
     >
-      {/* New Agent */}
       <div className="px-3 pt-3">
         <button
           type="button"
-          onClick={onNewSession}
+          onClick={() => onNewSession()}
           disabled={isLoading || isStreaming}
           className="flex w-full items-center gap-2 rounded-[var(--radius-pill)] bg-[var(--surface-hover)] px-3 py-2 text-[15px] font-medium tracking-[0.02em] text-[var(--sidebar-text)] transition-colors hover:bg-[var(--surface-active)] disabled:opacity-40"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
-            <path d="M12 2L2 7l10 5 10-5-10-5z" />
-            <path d="M2 17l10 5 10-5M2 12l10 5 10-5" />
+            <path d="M12 5v14M5 12h14" />
           </svg>
-          New Agent
+          New Chat
         </button>
       </div>
 
-      {/* Nav items */}
       <nav className="mt-2 flex flex-col gap-0.5 px-2">
         <NavItem icon="search" label="Search" onClick={onOpenSearch} />
-        <NavItem icon="star" label="收藏内容" badge={favoriteCount > 0 ? favoriteCount : undefined} onClick={onOpenFavorites} />
+        <NavItem
+          icon="star"
+          label="收藏内容"
+          badge={favoriteCount > 0 ? favoriteCount : undefined}
+          onClick={onOpenFavorites}
+        />
       </nav>
 
-      {/* Session folders */}
-      <div className="mt-4 flex-1 overflow-y-auto px-2">
-        {workspaces.map((workspace) => {
-          const isExpanded = expandedFolders[workspace.id] ?? false
-          const isActive = workspace.id === activeWorkspaceId
-          const folderSessions = isActive ? sessions : []
+      <div className="mt-3 flex items-center gap-1 px-2">
+        <div className="min-w-0 flex-1 px-1 text-[13.5px] font-medium tracking-[0.01em] text-[var(--sidebar-text)]">
+          Workspaces
+        </div>
+        <button
+          ref={openWorkspaceBtnRef}
+          type="button"
+          title="Open Workspace"
+          aria-label="Open Workspace"
+          aria-expanded={openWorkspaceMenu}
+          onClick={() => setOpenWorkspaceMenu((v) => !v)}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
+        >
+          <FolderPlusIcon />
+        </button>
+      </div>
+
+      <OpenWorkspaceMenu
+        open={openWorkspaceMenu}
+        onClose={() => setOpenWorkspaceMenu(false)}
+        recents={projects.filter((p) => !!p.root)}
+        anchorRef={openWorkspaceBtnRef}
+        onSelectRecent={(id) => onActivateProject(id)}
+        onBrowseThisPc={onBrowseThisPc}
+      />
+
+      <div className="mt-1 flex-1 overflow-y-auto px-2 pb-2">
+        {projects.map((project) => {
+          const isOpen = expanded[project.id] ?? false
+          const isActive = project.id === activeProjectId
+          const folderSessions = sessionsByProject[project.id] ?? []
 
           return (
-            <div key={workspace.id} className="mb-1">
-              <button
-                type="button"
-                onClick={() => {
-                  onSwitchWorkspace(workspace.id)
-                  toggleFolder(workspace.id)
-                }}
-                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[14px] font-[500] tracking-[0.02em] text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
+            <div key={project.id} className="mb-0.5">
+              <div
+                className={[
+                  'group flex w-full items-center gap-1 rounded-md px-1.5 py-1 transition-colors',
+                  isActive
+                    ? 'text-[var(--sidebar-text)]'
+                    : 'text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]',
+                ].join(' ')}
+                onContextMenu={(e) => openProjectContextMenu(e, project)}
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  className={['h-3 w-3 shrink-0 transition-transform', isExpanded ? 'rotate-90' : ''].join(' ')}
+                <button
+                  type="button"
+                  title={isOpen ? '收起' : '展开'}
+                  onClick={() => toggleExpand(project.id)}
+                  className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
                 >
-                  <path d="M9 18l6-6-6-6" />
-                </svg>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 shrink-0 opacity-60">
-                  <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <span className="truncate">{workspace.name}</span>
-              </button>
+                  <ChevronIcon open={isOpen} />
+                </button>
+                <button
+                  type="button"
+                  title={project.root || '未绑定本地目录'}
+                  onClick={() => {
+                    onActivateProject(project.id)
+                    setExpanded((prev) => ({ ...prev, [project.id]: true }))
+                  }}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-0.5 py-0.5 text-left"
+                >
+                  <FolderIcon open={isOpen} />
+                  <span className="min-w-0 truncate text-[13.5px] font-medium tracking-[0.01em]">
+                    {project.name}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  title={`在「${project.name}」下新建对话`}
+                  disabled={isLoading || isStreaming}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onActivateProject(project.id)
+                    setExpanded((prev) => ({ ...prev, [project.id]: true }))
+                    onNewSession(project.id)
+                  }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[var(--sidebar-hover)] group-hover:opacity-100 disabled:opacity-30"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+              </div>
 
-              {isExpanded && isActive && (
-                <div className="ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-[var(--border-subtle)] pl-2">
+              {isOpen && (
+                <div className="ml-5 mt-0.5 flex flex-col gap-0.5">
                   {isLoading ? (
-                    <span className="px-2 py-1 text-xs text-[var(--sidebar-muted)]">加载中...</span>
+                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">加载中...</span>
                   ) : folderSessions.length === 0 ? (
-                    <span className="px-2 py-1 text-xs text-[var(--sidebar-muted)]">暂无对话</span>
+                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">暂无对话</span>
                   ) : (
                     folderSessions.map((chat) => {
                       const isRenaming = renamingId === chat.id
@@ -241,7 +477,7 @@ export function Sidebar({
                                   cancelRename()
                                 }
                               }}
-                              className="min-w-0 flex-1 rounded-md border border-[var(--input-border)] bg-[var(--input-bg)] px-2 py-1 text-[13px] text-[var(--sidebar-text)] outline-none focus:border-[var(--input-focus)]"
+                              className="min-w-0 flex-1 rounded-md border border-[var(--input-border)] bg-[var(--input-bg)] px-2 py-1 text-[13px] text-[var(--sidebar-text)] shadow-sm outline-none ring-1 ring-transparent transition-[border-color,box-shadow] focus:border-[var(--input-focus)] focus:ring-[var(--accent-bg)]"
                               aria-label="重命名对话"
                             />
                           </div>
@@ -252,80 +488,79 @@ export function Sidebar({
                         return (
                           <div
                             key={chat.id}
-                            className="flex w-full items-center gap-1 rounded-md bg-[var(--sidebar-active)] px-2 py-1"
+                            className="flex w-full items-center gap-2 rounded-md border border-red-500/20 bg-red-500/[0.06] px-2 py-1.5"
                           >
                             <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--sidebar-text)]">
-                              删除「{chat.title}」？
+                              Delete「{chat.title}」?
                             </span>
                             <button
                               type="button"
-                              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
+                              className="shrink-0 rounded-md px-2 py-0.5 text-[11px] text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)]"
                               onClick={(e) => {
-                                e.preventDefault()
                                 e.stopPropagation()
                                 setConfirmDeleteId(null)
                               }}
                             >
-                              取消
+                              Cancel
                             </button>
                             <button
                               type="button"
                               disabled={isStreaming}
-                              className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-red-400 hover:bg-red-500/15 disabled:opacity-40"
+                              className="shrink-0 rounded-md bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-40"
                               onClick={(e) => {
-                                e.preventDefault()
                                 e.stopPropagation()
                                 setConfirmDeleteId(null)
                                 onDeleteSession(chat.id)
                               }}
                             >
-                              删除
+                              Delete
                             </button>
                           </div>
                         )
                       }
 
+                      const showDot = chat.showUnreadDot
                       return (
                         <div
                           key={chat.id}
                           className={[
-                            'group flex w-full items-center gap-1 rounded-md px-2 py-1 transition-colors',
+                            'group/session flex w-full items-center gap-1 rounded-md py-[5px] pl-1.5 pr-2 transition-colors duration-100',
                             chat.isActive
                               ? 'bg-[var(--sidebar-active)] text-[var(--sidebar-text)]'
                               : 'text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]',
                           ].join(' ')}
+                          onContextMenu={(e) => openSessionContextMenu(e, chat)}
                         >
                           <button
                             type="button"
                             onClick={() => {
                               setConfirmDeleteId(null)
+                              onActivateProject(project.id)
                               onSwitchSession(chat.id)
                             }}
                             onDoubleClick={() => beginRename(chat.id, chat.title)}
-                            className="min-w-0 flex-1 truncate py-0.5 text-left text-[13.5px] font-[450] tracking-[0.015em]"
-                            title="双击重命名"
+                            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                            title={chat.title}
                           >
-                            {chat.title}
+                            <span className="flex h-4 w-2.5 shrink-0 items-center justify-center">
+                              {showDot ? <UnreadDot /> : null}
+                            </span>
+                            <span
+                              className={[
+                                'min-w-0 flex-1 truncate text-[13px] leading-snug tracking-[0.01em]',
+                                showDot ? 'font-[550] text-[var(--sidebar-text)]' : 'font-[450]',
+                              ].join(' ')}
+                            >
+                              {chat.title}
+                            </span>
                           </button>
-
-                          <div className="relative flex h-6 w-[52px] shrink-0 items-center justify-end">
+                          <div className="flex shrink-0 items-center gap-1.5 pl-1">
+                            {chat.isPinned && <SessionPinIcon />}
                             {chat.updatedAt && (
-                              <span className="text-[11px] text-[var(--text-dim)] transition-opacity group-hover:pointer-events-none group-hover:opacity-0 group-focus-within:pointer-events-none group-focus-within:opacity-0">
+                              <span className="text-[11px] tabular-nums text-[var(--text-dim)] opacity-80 group-hover/session:opacity-100">
                                 {formatRelativeTime(chat.updatedAt)}
                               </span>
                             )}
-                            <div className="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                              <IconBtn title="重命名" onClick={() => beginRename(chat.id, chat.title)}>
-                                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                              </IconBtn>
-                              <IconBtn
-                                title="删除"
-                                disabled={isStreaming}
-                                onClick={() => setConfirmDeleteId(chat.id)}
-                              >
-                                <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
-                              </IconBtn>
-                            </div>
                           </div>
                         </div>
                       )
@@ -336,15 +571,17 @@ export function Sidebar({
             </div>
           )
         })}
+
+        {projects.every((p) => !p.root) && (
+          <p className="px-2 py-3 text-xs leading-relaxed text-[var(--sidebar-muted)]">
+            用 This PC 绑定本地目录后，会在这里显示为项目文件夹。
+          </p>
+        )}
       </div>
 
-      {/* Footer actions */}
       <div className="border-t border-[var(--sidebar-border)] p-3">
         <div className="flex items-center gap-1">
-          <FooterIconButton
-            title={isDark ? '切换浅色模式' : '切换深色模式'}
-            onClick={onToggleTheme}
-          >
+          <FooterIconButton title={isDark ? '切换浅色模式' : '切换深色模式'} onClick={onToggleTheme}>
             {isDark ? <SunIcon /> : <MoonIcon />}
           </FooterIconButton>
           <FooterIconButton title="设置" onClick={onOpenSettings}>
@@ -359,7 +596,6 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Right-edge resize handle */}
       <div
         role="separator"
         aria-orientation="vertical"
@@ -379,7 +615,73 @@ export function Sidebar({
           isResizing ? 'after:bg-[var(--text-muted)]' : '',
         ].join(' ')}
       />
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </aside>
+  )
+}
+
+/** Folder with plus — Open Workspace. */
+/** Open Workspace — 16×16 grid keeps strokes crisp at sidebar size. */
+function FolderPlusIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.25}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden
+    >
+      <path d="M2 5.25A1.25 1.25 0 0 1 3.25 4h3.05l1.1 1.2h5.35A1.25 1.25 0 0 1 14 6.45v6.3A1.25 1.25 0 0 1 12.75 14h-9.5A1.25 1.25 0 0 1 2 12.75v-7.5Z" />
+      <path d="M8 8v3.5M6.25 9.75h3.5" />
+    </svg>
+  )
+}
+
+/** Lucide-style folder; open/closed crossfade via opacity. */
+function FolderIcon({ open }: { open: boolean }) {
+  const base =
+    'absolute inset-0 h-4 w-4 transition-opacity duration-200 ease-out'
+  return (
+    <span className="relative h-4 w-4 shrink-0 text-[var(--sidebar-muted)] opacity-90">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={[base, open ? 'opacity-0' : 'opacity-100'].join(' ')}
+        aria-hidden
+      >
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      </svg>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={[base, open ? 'opacity-100' : 'opacity-0'].join(' ')}
+        aria-hidden
+      >
+        <path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+      </svg>
+    </span>
   )
 }
 
@@ -390,7 +692,7 @@ function FooterIconButton({
 }: {
   title: string
   onClick: () => void
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <button
@@ -461,39 +763,6 @@ function NavItem({
       {badge !== undefined && badge > 0 && (
         <span className="rounded-full bg-[var(--surface-hover)] px-1.5 text-[11px]">{badge}</span>
       )}
-    </button>
-  )
-}
-
-function IconBtn({
-  title,
-  onClick,
-  disabled,
-  children,
-}: {
-  title: string
-  onClick: () => void
-  disabled?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      disabled={disabled}
-      onPointerDown={(e) => {
-        e.stopPropagation()
-      }}
-      onClick={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        if (!disabled) onClick()
-      }}
-      className="flex h-6 w-6 items-center justify-center rounded text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)] disabled:opacity-40"
-    >
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3">
-        {children}
-      </svg>
     </button>
   )
 }

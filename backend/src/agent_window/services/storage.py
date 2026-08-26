@@ -22,17 +22,25 @@ def ensure_user_data_dir(user_id: str = settings.default_user_id) -> Path:
     return data_dir
 
 
-def create_session(db: Session, title: str, user_id: str = settings.default_user_id) -> SessionModel:
+def create_session(
+    db: Session,
+    title: str,
+    user_id: str = settings.default_user_id,
+    workspace_root: str | None = None,
+) -> SessionModel:
     data_dir = ensure_user_data_dir(user_id)
     session_id = f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
     session_path = data_dir / session_id
     session_path.mkdir(parents=True, exist_ok=True)
+
+    root = (workspace_root or "").strip() or None
 
     session = SessionModel(
         id=session_id,
         user_id=user_id,
         title=title,
         data_path=str(session_path.relative_to(Path(settings.app_data_dir))),
+        workspace_root=root,
     )
     db.add(session)
     db.commit()
@@ -42,6 +50,47 @@ def create_session(db: Session, title: str, user_id: str = settings.default_user
 
 def get_session_path(session: SessionModel) -> Path:
     return Path(settings.app_data_dir) / session.data_path
+
+
+def write_turn_blob(session: SessionModel, assistant_id: str, seq: int, text: str) -> str:
+    """
+    Spill oversized turn payload under session.data_path/turns/{assistant}/e{n}.txt.
+
+    Returns a file: relative ref (posix) suitable for TurnEvent.full_ref.
+    """
+    from agent_window.agent.turn_event import FILE_REF_PREFIX
+
+    safe_asst = sanitize_filename(assistant_id) or "assistant"
+    rel = Path("turns") / safe_asst / f"e{int(seq)}.txt"
+    abs_path = get_session_path(session) / rel
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(text, encoding="utf-8")
+    return f"{FILE_REF_PREFIX}{rel.as_posix()}"
+
+
+def resolve_session_blob_path(session: SessionModel, rel_path: str) -> Path:
+    """Resolve a relative path under session.data_path; reject traversal."""
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    if not cleaned or ".." in cleaned.split("/"):
+        raise ValueError("invalid blob path")
+    root = get_session_path(session).resolve()
+    target = (root / cleaned).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("blob path escapes session data_path") from exc
+    return target
+
+
+def read_session_blob(session: SessionModel, file_ref: str) -> str:
+    """Read a file: ref written by write_turn_blob."""
+    from agent_window.agent.turn_event import file_ref_path
+
+    rel = file_ref_path(file_ref)
+    path = resolve_session_blob_path(session, rel)
+    if not path.is_file():
+        raise FileNotFoundError(rel)
+    return path.read_text(encoding="utf-8")
 
 
 def append_message_to_markdown(session: SessionModel, message: Message) -> None:
@@ -83,13 +132,25 @@ def update_session_title(db: Session, session: SessionModel, title: str) -> Sess
     return session
 
 
-def add_message(db: Session, session: SessionModel, role: Role, content: str, sequence: int, *, summary: str = "") -> Message:
+def add_message(
+    db: Session,
+    session: SessionModel,
+    role: Role,
+    content: str,
+    sequence: int,
+    *,
+    summary: str = "",
+    trace: str = "[]",
+    attachments: str = "[]",
+) -> Message:
     message = Message(
         session_id=session.id,
         role=role,
         content=content,
         sequence=sequence,
         summary=summary,
+        trace=trace,
+        attachments=attachments,
     )
     db.add(message)
     db.commit()

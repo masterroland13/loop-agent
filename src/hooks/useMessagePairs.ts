@@ -9,6 +9,7 @@ import {
   listMemoryProposals,
   listPatches,
   listShells,
+  fetchRuntime,
   regenerateStream,
   rejectMemory,
   rejectPatch,
@@ -18,50 +19,10 @@ import {
   sendMessageStream,
   toggleMessageFavorite,
   updateSessionTitle as updateSessionTitleApi,
-  type ApiMessage,
   type StreamEvent,
 } from '../api/agent'
-import type { MessagePair, PendingMemory, PendingPatch, PendingShell, Role, ToolTraceItem, TurnMeta } from '../types'
-
-function buildMessagePairs(messages: ApiMessage[]): MessagePair[] {
-  const pairs: MessagePair[] = []
-  const sorted = [...messages].sort((a, b) => a.sequence - b.sequence)
-  for (let i = 0; i < sorted.length; i += 2) {
-    const user = sorted[i]
-    const assistant = sorted[i + 1]
-    if (user && user.role === 'user' && assistant && assistant.role === 'assistant') {
-      let turnMeta: TurnMeta | undefined
-      if (assistant.summary) {
-        try {
-          const parsed = JSON.parse(assistant.summary) as TurnMeta
-          if (parsed.type === 'turn_meta') {
-            turnMeta = parsed
-          }
-        } catch {
-          // ignore non-JSON summaries
-        }
-      }
-      pairs.push({
-        id: user.id,
-        user: {
-          id: user.id,
-          role: 'user' as Role,
-          content: user.content,
-          createdAt: new Date(user.created_at).getTime(),
-        },
-        assistant: {
-          id: assistant.id,
-          role: 'assistant' as Role,
-          content: assistant.content,
-          createdAt: new Date(assistant.created_at).getTime(),
-        },
-        isFavorite: user.is_favorite,
-        turnMeta,
-      })
-    }
-  }
-  return pairs
-}
+import type { MessagePair, PendingMemory, PendingPatch, PendingShell, ToolTraceItem } from '../types'
+import { buildMessagePairs, mergeStoppedFailedState } from '../utils/turnTrace'
 
 export function useMessagePairs(
   sessionId: string | null,
@@ -132,6 +93,7 @@ export function useMessagePairs(
             path: p.path,
             unified_diff: p.unified_diff,
             is_new_file: p.is_new_file,
+            is_delete: Boolean(p.is_delete),
             status: p.status as PendingPatch['status'],
             error: p.error || undefined,
           })),
@@ -196,6 +158,62 @@ export function useMessagePairs(
       cancelled = true
     }
   }, [sessionId])
+
+  // F6: recover in-progress turn after refresh while backend still runs.
+  useEffect(() => {
+    if (!sessionId || isStreaming) return
+
+    let cancelled = false
+    let timer: ReturnType<typeof setInterval> | undefined
+
+    async function shouldPoll(): Promise<boolean> {
+      try {
+        const runtime = await fetchRuntime()
+        if (runtime.active_sessions.includes(sessionId as string)) return true
+      } catch {
+        // ignore
+      }
+      const messages = await getMessages(sessionId as string)
+      const loaded = buildMessagePairs(messages)
+      const last = loaded[loaded.length - 1]
+      return Boolean(last?.turnInProgress)
+    }
+
+    async function pollOnce() {
+      if (cancelled) return false
+      try {
+        const [messages, runtime] = await Promise.all([
+          getMessages(sessionId as string),
+          fetchRuntime().catch(() => ({ active_sessions: [] as string[] })),
+        ])
+        if (cancelled) return false
+        setPairs(buildMessagePairs(messages))
+        const active = runtime.active_sessions?.includes(sessionId as string)
+        const loaded = buildMessagePairs(messages)
+        const last = loaded[loaded.length - 1]
+        return Boolean(active || last?.turnInProgress)
+      } catch {
+        return false
+      }
+    }
+
+    shouldPoll().then((needed) => {
+      if (!needed || cancelled) return
+      timer = window.setInterval(() => {
+        pollOnce().then((continuePoll) => {
+          if (!continuePoll && timer) {
+            window.clearInterval(timer)
+            timer = undefined
+          }
+        })
+      }, 2000)
+    })
+
+    return () => {
+      cancelled = true
+      if (timer) window.clearInterval(timer)
+    }
+  }, [sessionId, isStreaming])
 
   const findCurrentIndexFromScroll = useCallback(() => {
     const container = listRef.current
@@ -340,19 +358,38 @@ export function useMessagePairs(
     )
     setPairs((prev) => {
       const last = prev[prev.length - 1]
-      if (!last?.toolTrace?.some((t) => t.status === 'running')) return prev
+      if (!last) return prev
+      const trace = (last.toolTrace || []).map((t) =>
+        t.status === 'running' ? { ...t, status: 'error' as const, detail: '已停止' } : t,
+      )
       const updated = [...prev]
       updated[prev.length - 1] = {
         ...last,
-        toolTrace: last.toolTrace!.map((t) =>
-          t.status === 'running' ? { ...t, status: 'error' as const, detail: '已停止' } : t,
-        ),
+        failed: true,
+        turnInProgress: false,
+        toolTrace: trace.length > 0 ? trace : last.toolTrace,
+        assistant: {
+          ...last.assistant,
+          content: last.assistant.content || '已停止',
+        },
       }
       return updated
     })
     setError('已停止')
     setIsStreaming(false)
     setAwaitingApproval(false)
+
+    if (sessionId) {
+      window.setTimeout(async () => {
+        try {
+          const messages = await getMessages(sessionId)
+          const loaded = buildMessagePairs(messages)
+          setPairs((prev) => mergeStoppedFailedState(prev, loaded))
+        } catch {
+          // keep local stopped state
+        }
+      }, 500)
+    }
   }, [sessionId])
 
   const upsertPatch = useCallback((patch: PendingPatch) => {
@@ -401,6 +438,7 @@ export function useMessagePairs(
           path: result.path,
           unified_diff: result.unified_diff,
           is_new_file: result.is_new_file,
+          is_delete: Boolean(result.is_delete),
           status: result.status as PendingPatch['status'],
           error: result.error || undefined,
           hunk_count: result.hunk_count ?? undefined,
@@ -426,6 +464,7 @@ export function useMessagePairs(
           path: result.path,
           unified_diff: result.unified_diff,
           is_new_file: result.is_new_file,
+          is_delete: Boolean(result.is_delete),
           status: result.status as PendingPatch['status'],
           error: result.error || undefined,
           hunk_count: result.hunk_count ?? undefined,
@@ -451,6 +490,7 @@ export function useMessagePairs(
           path: result.path,
           unified_diff: result.unified_diff,
           is_new_file: result.is_new_file,
+          is_delete: Boolean(result.is_delete),
           status: result.status as PendingPatch['status'],
           error: result.error || undefined,
         })
@@ -474,6 +514,7 @@ export function useMessagePairs(
           path: result.path,
           unified_diff: result.unified_diff,
           is_new_file: result.is_new_file,
+          is_delete: Boolean(result.is_delete),
           status: result.status as PendingPatch['status'],
           error: result.error || undefined,
         })
@@ -635,6 +676,64 @@ export function useMessagePairs(
             ...last,
             id: event.message_id as string,
             user: { ...last.user, id: event.message_id as string },
+            goal: event.goal || last.goal,
+            turnInProgress: true,
+            assistant: event.assistant_message_id
+              ? { ...last.assistant, id: event.assistant_message_id as string }
+              : last.assistant,
+          }
+          return updated
+        })
+      } else if (event.type === 'turn_goal' && event.goal) {
+        setPairs((prev) => {
+          const last = prev[prev.length - 1]
+          if (!last) return prev
+          const updated = [...prev]
+          const prevGoal =
+            typeof event.previous_goal === 'string' && event.previous_goal.trim()
+              ? event.previous_goal.trim()
+              : undefined
+          updated[prev.length - 1] = {
+            ...last,
+            goal: event.goal,
+            ...(prevGoal ? { previousGoal: prevGoal } : {}),
+          }
+          return updated
+        })
+      } else if (event.type === 'progress_checkpoint') {
+        setPairs((prev) => {
+          const last = prev[prev.length - 1]
+          if (!last) return prev
+          const updated = [...prev]
+          const prevCp = last.progressCheckpoint
+          const replyText =
+            typeof event.reply === 'string' && event.reply.trim() ? event.reply.trim() : ''
+          const isOpening = !event.settled && !replyText
+          let nextCp: NonNullable<typeof prevCp>
+          if (isOpening) {
+            nextCp = {
+              toolsSinceLast: event.tools_since_last ?? 0,
+              reason: event.reason || 'interval',
+            }
+          } else if (replyText) {
+            nextCp = {
+              toolsSinceLast: event.tools_since_last ?? prevCp?.toolsSinceLast ?? 0,
+              reason: event.reason || prevCp?.reason || 'interval',
+              reply: replyText,
+              settled: true,
+            }
+          } else {
+            nextCp = {
+              toolsSinceLast: event.tools_since_last ?? prevCp?.toolsSinceLast ?? 0,
+              reason: event.reason || prevCp?.reason || 'interval',
+              settled: true,
+              ...(prevCp?.reply ? { reply: prevCp.reply } : {}),
+            }
+          }
+          updated[prev.length - 1] = {
+            ...last,
+            goal: event.goal || last.goal,
+            progressCheckpoint: nextCp,
           }
           return updated
         })
@@ -662,6 +761,12 @@ export function useMessagePairs(
             (t) => t.name === event.name && t.status === 'running',
           )
           const snippet = (event.content || '').slice(0, 400)
+          const fullRef = typeof event.full_ref === 'string' ? event.full_ref : undefined
+          const truncated = Boolean(event.truncated)
+          const detail =
+            truncated || Boolean(fullRef?.startsWith('file:'))
+              ? event.summary || snippet
+              : snippet
           let isError = false
           try {
             const parsed = JSON.parse(event.content || '') as { error?: unknown; status?: string }
@@ -669,19 +774,21 @@ export function useMessagePairs(
           } catch {
             isError = false
           }
+          const item = {
+            name: event.name as string,
+            status: (isError ? 'error' : 'done') as 'error' | 'done',
+            detail,
+            fullRef,
+            truncated,
+          }
           if (idx >= 0) {
             const realIdx = trace.length - 1 - idx
             trace[realIdx] = {
               ...trace[realIdx],
-              status: isError ? 'error' : 'done',
-              detail: snippet,
+              ...item,
             }
           } else {
-            trace.push({
-              name: event.name as string,
-              status: isError ? 'error' : 'done',
-              detail: snippet,
-            })
+            trace.push(item)
           }
           updated[prev.length - 1] = { ...last, toolTrace: trace }
           return updated
@@ -692,6 +799,7 @@ export function useMessagePairs(
           path: event.path,
           unified_diff: event.unified_diff || '',
           is_new_file: Boolean(event.is_new_file),
+          is_delete: Boolean(event.is_delete),
           status: (event.status as PendingPatch['status']) || 'pending',
           error: event.error,
         })
@@ -747,7 +855,9 @@ export function useMessagePairs(
               compressed: Boolean(event.compressed),
               memory_injected: Boolean(event.memory_injected),
               message_id: event.message_id || '',
+              goal: event.goal || last.goal,
             },
+            goal: event.goal || last.goal,
             assistant: event.message_id
               ? { ...last.assistant, id: event.message_id }
               : last.assistant,
@@ -811,10 +921,46 @@ export function useMessagePairs(
             updated[prev.length - 1] = {
               ...last,
               failed: false,
+              turnInProgress: false,
               assistant: { ...last.assistant, id: event.message_id as string },
             }
             return updated
           })
+        }
+        if (sessionId) {
+          window.setTimeout(async () => {
+            try {
+              const messages = await getMessages(sessionId)
+              const loaded = buildMessagePairs(messages)
+              setPairs((prev) => {
+                const lastPrev = prev[prev.length - 1]
+                const lastLoaded = loaded[loaded.length - 1]
+                if (!lastPrev || !lastLoaded) return loaded.length ? loaded : prev
+                const merged = [...loaded]
+                merged[merged.length - 1] = {
+                  ...lastLoaded,
+                  failed: false,
+                  turnInProgress: false,
+                  assistant: {
+                    ...lastLoaded.assistant,
+                    content: lastLoaded.assistant.content || lastPrev.assistant.content,
+                    id: lastLoaded.assistant.id || lastPrev.assistant.id,
+                  },
+                  toolTrace:
+                    lastLoaded.toolTrace && lastLoaded.toolTrace.length > 0
+                      ? lastLoaded.toolTrace
+                      : lastPrev.toolTrace,
+                  goal: lastLoaded.goal ?? lastPrev.goal,
+                  previousGoal: lastLoaded.previousGoal ?? lastPrev.previousGoal,
+                  progressCheckpoint: lastLoaded.progressCheckpoint ?? lastPrev.progressCheckpoint,
+                  turnMeta: lastLoaded.turnMeta ?? lastPrev.turnMeta,
+                }
+                return merged
+              })
+            } catch {
+              // keep local state
+            }
+          }, 500)
         }
         setCurrentIndex((prev) => Math.max(prev, pairs.length))
         requestAnimationFrame(() => {
@@ -830,16 +976,18 @@ export function useMessagePairs(
         const cancelled = event.code === 'TURN_CANCELLED'
         const errorMessage = event.message || (cancelled ? '已停止' : '抱歉，请求失败，请重试。')
         setError(errorMessage)
-        if (cancelled) {
-          return
-        }
         setPairs((prev) => {
           const last = prev[prev.length - 1]
           if (!last) return prev
+          const trace = (last.toolTrace || []).map((t) =>
+            t.status === 'running' ? { ...t, status: 'error' as const, detail: cancelled ? '已停止' : t.detail } : t,
+          )
           const updated = [...prev]
           updated[prev.length - 1] = {
             ...last,
             failed: true,
+            turnInProgress: false,
+            toolTrace: trace.length > 0 ? trace : last.toolTrace,
             assistant: {
               ...last.assistant,
               content: last.assistant.content || errorMessage,
@@ -847,9 +995,20 @@ export function useMessagePairs(
           }
           return updated
         })
+        if (sessionId) {
+          window.setTimeout(async () => {
+            try {
+              const messages = await getMessages(sessionId)
+              const loaded = buildMessagePairs(messages)
+              setPairs((prev) => mergeStoppedFailedState(prev, loaded))
+            } catch {
+              // keep local state
+            }
+          }, 500)
+        }
       }
     },
-    [pairs.length, upsertPatch, upsertShell, upsertMemory],
+    [pairs.length, sessionId, upsertPatch, upsertShell, upsertMemory],
   )
 
   const handleStreamError = useCallback((streamError: Error) => {
@@ -874,7 +1033,7 @@ export function useMessagePairs(
   }, [])
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, attachmentIds?: string[], attachmentMetas?: import('../types').AttachmentMeta[]) => {
       if (!sessionId || isStreaming) return
 
       setIsStreaming(true)
@@ -904,6 +1063,7 @@ export function useMessagePairs(
           role: 'user',
           content,
           createdAt: now,
+          attachments: attachmentMetas,
         },
         assistant: {
           id: pendingAssistantId,
@@ -922,6 +1082,7 @@ export function useMessagePairs(
         handleStreamEvent,
         handleStreamError,
         modelName,
+        attachmentIds,
       )
     },
     [
@@ -1053,3 +1214,4 @@ export function useMessagePairs(
     retryToolStep,
   }
 }
+

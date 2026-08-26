@@ -393,6 +393,7 @@ def _stream_turn(
                         "approx_completion_tokens",
                         "compressed",
                         "memory_injected",
+                        "goal",
                         "message_id",
                     )
                 }

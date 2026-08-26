@@ -7,10 +7,27 @@ interface MessageListProps {
   currentIndex: number
   isStreaming?: boolean
   awaitingApproval?: boolean
+  sessionId?: string | null
+  expandedUserPairId: string | null
+  expandedDraft: string
+  expandedAttachments?: import('../utils/chatAttachment').ChatAttachment[]
+  onExpandUser: (pairId: string, content: string) => void
+  onExpandedDraftChange: (value: string) => void
+  onExpandedSend: () => void
+  onExpandedAttach?: () => void
   onToggleFavorite: (id: string) => void
   onRetry?: (pairId: string) => void
   onRetryToolStep?: (pairId: string, item: ToolTraceItem) => void
   setItemRef: (index: number) => (element: HTMLDivElement | null) => void
+  inputToolbar?: {
+    onModelClick?: () => void
+    onThisPc?: () => void
+    onRemoveAttachment?: (localKey: string) => void
+    pcMode?: boolean
+    modelName?: string
+    enterToSend?: boolean
+    disabled?: boolean
+  }
 }
 
 export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
@@ -20,10 +37,19 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
       currentIndex,
       isStreaming,
       awaitingApproval,
+      sessionId,
+      expandedUserPairId,
+      expandedDraft,
+      expandedAttachments,
+      onExpandUser,
+      onExpandedDraftChange,
+      onExpandedSend,
+      onExpandedAttach,
       onToggleFavorite,
       onRetry,
       onRetryToolStep,
       setItemRef,
+      inputToolbar,
     },
     ref,
   ) {
@@ -38,10 +64,19 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
               isActive={index === currentIndex}
               isStreaming={isStreaming && index === pairs.length - 1}
               awaitingApproval={awaitingApproval && index === pairs.length - 1}
+              sessionId={sessionId}
+              expandedUserPairId={expandedUserPairId}
+              expandedDraft={expandedDraft}
+              expandedAttachments={expandedAttachments}
+              onExpandUser={onExpandUser}
+              onExpandedDraftChange={onExpandedDraftChange}
+              onExpandedSend={onExpandedSend}
+              onExpandedAttach={onExpandedAttach}
               onToggleFavorite={onToggleFavorite}
               onRetry={onRetry}
               onRetryToolStep={onRetryToolStep}
               setItemRef={setItemRef}
+              inputToolbar={inputToolbar}
             />
           ))}
         </div>

@@ -17,6 +17,10 @@ DEFAULTS: Dict[str, Any] = {
     "active_skills": [],
     "approval_timeout_sec": 300,
     "disabled_tools": [],
+    # How many LLM↔tool rounds per turn before soft-stop / abort.
+    "max_tool_iters": 24,
+    # Progress checkpoint every N completed tools (0 = interval off; gate still checkpoints).
+    "checkpoint_every_n_tools": 4,
 }
 
 
@@ -54,6 +58,16 @@ def load_agent_settings() -> Dict[str, Any]:
     if not isinstance(disabled, list):
         disabled = []
     data["disabled_tools"] = [str(t).strip() for t in disabled if str(t).strip()]
+    try:
+        iters = int(data.get("max_tool_iters") or 24)
+    except (TypeError, ValueError):
+        iters = 24
+    data["max_tool_iters"] = max(8, min(64, iters))
+    from agent_window.agent.checkpoint import checkpoint_interval_from_settings
+
+    data["checkpoint_every_n_tools"] = checkpoint_interval_from_settings(
+        data.get("checkpoint_every_n_tools"),
+    )
     return data
 
 
@@ -71,6 +85,14 @@ def save_agent_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
         current["approval_timeout_sec"] = max(30, min(3600, int(updates["approval_timeout_sec"])))
     if "disabled_tools" in updates and updates["disabled_tools"] is not None:
         current["disabled_tools"] = [str(t).strip() for t in updates["disabled_tools"] if str(t).strip()]
+    if "max_tool_iters" in updates and updates["max_tool_iters"] is not None:
+        current["max_tool_iters"] = max(8, min(64, int(updates["max_tool_iters"])))
+    if "checkpoint_every_n_tools" in updates and updates["checkpoint_every_n_tools"] is not None:
+        from agent_window.agent.checkpoint import checkpoint_interval_from_settings
+
+        current["checkpoint_every_n_tools"] = checkpoint_interval_from_settings(
+            updates["checkpoint_every_n_tools"],
+        )
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")

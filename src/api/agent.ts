@@ -5,10 +5,12 @@ export interface Session {
   title: string
   created_at: string
   updated_at: string
+  workspace_root?: string | null
 }
 
 export interface CreateSessionRequest {
   title: string
+  workspace_root?: string | null
 }
 
 export interface MessageRequest {
@@ -21,6 +23,14 @@ export interface HealthStatus {
   provider_available: boolean
 }
 
+export interface AttachmentMeta {
+  id: string
+  filename: string
+  size: number
+  content_type?: string | null
+  url: string
+}
+
 export interface ApiMessage {
   id: string
   role: string
@@ -28,6 +38,8 @@ export interface ApiMessage {
   sequence: number
   is_favorite: boolean
   summary?: string
+  trace?: Array<Record<string, unknown>>
+  attachments?: AttachmentMeta[]
   created_at: string
 }
 
@@ -39,6 +51,7 @@ export interface TurnMeta {
   compressed: boolean
   memory_injected: boolean
   message_id: string
+  goal?: string
 }
 
 export interface FavoriteItem {
@@ -54,6 +67,7 @@ export interface StreamEvent {
   type: string
   content?: string
   message_id?: string
+  assistant_message_id?: string
   code?: string
   message?: string
   name?: string
@@ -63,6 +77,7 @@ export interface StreamEvent {
   path?: string
   unified_diff?: string
   is_new_file?: boolean
+  is_delete?: boolean
   status?: string
   error?: string
   kind?: string
@@ -74,6 +89,8 @@ export interface StreamEvent {
   stdout?: string
   stderr?: string
   truncated?: boolean
+  full_ref?: string
+  summary?: string
   memory_id?: string
   mode?: string
   preview?: string
@@ -83,6 +100,12 @@ export interface StreamEvent {
   approx_completion_tokens?: number
   compressed?: boolean
   memory_injected?: boolean
+  goal?: string
+  previous_goal?: string
+  tools_since_last?: number
+  reason?: string
+  reply?: string
+  settled?: boolean
 }
 
 export interface AgentSettings {
@@ -92,6 +115,8 @@ export interface AgentSettings {
   active_skills: string[]
   approval_timeout_sec: number
   disabled_tools: string[]
+  max_tool_iters: number
+  checkpoint_every_n_tools: number
 }
 
 export interface MemoryProposal {
@@ -181,11 +206,14 @@ export async function fetchModels(): Promise<ModelsResponse> {
   return response.json()
 }
 
-export async function createSession(title: string): Promise<Session> {
+export async function createSession(
+  title: string,
+  workspaceRoot?: string | null,
+): Promise<Session> {
   const response = await apiFetch('/api/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, workspace_root: workspaceRoot ?? null }),
   })
   return response.json()
 }
@@ -202,6 +230,13 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export async function getMessages(sessionId: string): Promise<ApiMessage[]> {
   const response = await apiFetch(`/api/sessions/${sessionId}/messages`)
   return response.json()
+}
+
+/** Fetch oversized tool payload spilled under session.data_path (file: ref). */
+export async function getSessionBlob(sessionId: string, fileRef: string): Promise<string> {
+  const qs = new URLSearchParams({ ref: fileRef })
+  const response = await apiFetch(`/api/sessions/${sessionId}/blobs?${qs.toString()}`)
+  return response.text()
 }
 
 export async function updateSessionTitle(sessionId: string, title: string): Promise<Session> {
@@ -257,6 +292,7 @@ export interface PatchResponse {
   path: string
   unified_diff: string
   is_new_file: boolean
+  is_delete?: boolean
   status: string
   error?: string | null
   hunk_count?: number | null
@@ -460,8 +496,37 @@ export async function updateActiveSkills(skillIds: string[]): Promise<SkillsResp
   return response.json()
 }
 
-export async function fetchAudit(limit = 50): Promise<AuditEvent[]> {
-  const response = await apiFetch(`/api/audit?limit=${limit}`)
+export async function fetchAudit(
+  limit = 50,
+  sessionId?: string | null,
+  eventType?: string | null,
+): Promise<AuditEvent[]> {
+  const qs = new URLSearchParams({ limit: String(limit) })
+  if (sessionId) qs.set('session_id', sessionId)
+  if (eventType) qs.set('event_type', eventType)
+  const response = await apiFetch(`/api/audit?${qs.toString()}`)
+  return response.json()
+}
+
+export interface AuditSessionSummary {
+  session_id: string
+  event_count: number
+  last_at: string | null
+}
+
+export async function fetchAuditSessions(limit = 50): Promise<AuditSessionSummary[]> {
+  const response = await apiFetch(`/api/audit/sessions?limit=${limit}`)
+  return response.json()
+}
+
+export async function fetchSessionAudit(
+  sessionId: string,
+  limit = 100,
+  eventType?: string | null,
+): Promise<AuditEvent[]> {
+  const qs = new URLSearchParams({ limit: String(limit) })
+  if (eventType) qs.set('event_type', eventType)
+  const response = await apiFetch(`/api/sessions/${sessionId}/audit?${qs.toString()}`)
   return response.json()
 }
 
@@ -503,16 +568,40 @@ export async function cancelSession(sessionId: string): Promise<{ ok: boolean; c
   return response.json()
 }
 
+
+export function attachmentDownloadUrl(sessionId: string, attachmentId: string): string {
+  return `${API_BASE_URL}/api/sessions/${sessionId}/attachments/${attachmentId}`
+}
+
+export async function uploadAttachment(sessionId: string, file: File): Promise<AttachmentMeta> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await apiFetch(`/api/sessions/${sessionId}/attachments`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(formatApiError(response.status, detail))
+  }
+  return response.json()
+}
+
 export function sendMessageStream(
   sessionId: string,
   content: string,
   onEvent: (event: StreamEvent) => void,
   onError: (error: Error) => void,
   model?: string,
+  attachmentIds?: string[],
 ): () => void {
   return startSseStream(
     `/api/sessions/${sessionId}/messages`,
-    { content, ...(model ? { model } : {}) },
+    {
+      content,
+      ...(model ? { model } : {}),
+      ...(attachmentIds && attachmentIds.length ? { attachment_ids: attachmentIds } : {}),
+    },
     onEvent,
     onError,
     sessionId,
@@ -631,3 +720,4 @@ function startSseStream(
 }
 
 export { API_BASE_URL }
+

@@ -5,8 +5,8 @@ import json
 import time
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from agent_window.config import settings
@@ -15,8 +15,10 @@ from agent_window.schemas import (
     AgentSettingsResponse,
     AgentSettingsUpdateRequest,
     AssetsResponse,
+    AttachmentResponse,
     AuditEmitRequest,
     AuditEventResponse,
+    AuditSessionSummary,
     ApplyPartialRequest,
     CreateSessionRequest,
     FavoriteItemResponse,
@@ -47,9 +49,29 @@ from agent_window.schemas import (
     WorkspaceStatusResponse,
 )
 from agent_window.agent.loop import run_agent_loop
+from agent_window.agent.goal import (
+    extract_turn_goal,
+    goals_equal,
+    previous_turn_goal_from_messages,
+    prior_user_texts_from_history,
+)
 from agent_window.services.agent_settings import load_agent_settings, save_agent_settings
+from agent_window.services.attachment_context import use_attachment_session
+from agent_window.services.attachments import (
+    AttachmentError,
+    build_content_for_model,
+    list_metas_for_ids,
+    load_meta,
+    resolve_file,
+    save_upload,
+)
 from agent_window.services.llm_config import public_llm_config, save_llm_config
-from agent_window.services.audit import audit_to_public, emit_audit, list_audit_events
+from agent_window.services.audit import (
+    audit_to_public,
+    emit_audit,
+    list_audit_events,
+    list_audit_session_summaries,
+)
 from agent_window.services.compress import approx_messages_tokens, approx_tokens, compress_messages_if_needed
 from agent_window.services.memory import (
     decide_memory,
@@ -68,7 +90,6 @@ from agent_window.services.session_turns import (
     end_turn,
     runtime_info,
     try_begin_turn,
-    watch_disconnect,
 )
 from agent_window.services.shell import decide_shell, list_pending_shells, retry_shell, shell_to_public
 from agent_window.services.skills import (
@@ -86,9 +107,11 @@ from agent_window.services.storage import (
     get_session,
     list_favorites,
     list_sessions,
+    read_session_blob,
     toggle_message_favorite,
     update_session_title,
 )
+from agent_window.services.turn_trace import TurnTraceWriter, trace_for_response
 from agent_window.services.workspace import (
     WorkspaceError,
     browse_directory,
@@ -100,6 +123,240 @@ from agent_window.services.workspace import (
 from agent_window.tools.registry import registry
 
 router = APIRouter()
+
+
+def _parse_message_attachments(message, session_id: str) -> list[AttachmentResponse]:
+    raw = getattr(message, "attachments", None) or "[]"
+    try:
+        items = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        items = []
+    if not isinstance(items, list):
+        return []
+    out: list[AttachmentResponse] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        aid = str(item["id"])
+        out.append(
+            AttachmentResponse(
+                id=aid,
+                filename=str(item.get("filename") or "file"),
+                size=int(item.get("size") or 0),
+                content_type=item.get("content_type"),
+                url=f"/api/sessions/{session_id}/attachments/{aid}",
+            )
+        )
+    return out
+
+
+def _message_to_response(message) -> MessageResponse:
+    session_id = getattr(message, "session_id", "") or ""
+    return MessageResponse(
+        id=message.id,
+        role=message.role.value,
+        content=message.content,
+        sequence=message.sequence,
+        is_favorite=message.is_favorite,
+        summary=message.summary or None,
+        trace=trace_for_response(message),
+        attachments=_parse_message_attachments(message, session_id),
+        created_at=message.created_at,
+    )
+
+
+async def _agent_turn_event_stream(
+    *,
+    session_id: str,
+    session_local: Session,
+    session_db,
+    user_message_id: str,
+    assistant_message_id: str,
+    chat_messages: List[dict],
+    turn_goal: str | None,
+    model: str | None,
+    model_name: str,
+    cancel_event: asyncio.Event,
+    compressed: bool,
+    memory_injected: bool,
+    prompt_tokens: int,
+    started: float,
+    http_request: Request,
+    agent_cfg: dict,
+    previous_goal: str | None = None,
+):
+    """Yield SSE lines for one agent turn; persist F6 trace on placeholder assistant."""
+    if not session_db:
+        yield f"event: error\ndata: {json.dumps({'code': 'SESSION_NOT_FOUND', 'message': 'Session not found'}, ensure_ascii=False)}\n\n"
+        return
+
+    assistant_row = get_message(session_local, assistant_message_id)
+    if not assistant_row:
+        yield f"event: error\ndata: {json.dumps({'code': 'ASSISTANT_NOT_FOUND', 'message': 'Assistant placeholder missing'}, ensure_ascii=False)}\n\n"
+        return
+
+    writer = TurnTraceWriter(session_local, session_db, assistant_row)
+    yield (
+        "event: meta\ndata: "
+        f"{json.dumps({'message_id': user_message_id, 'goal': turn_goal, 'assistant_message_id': writer.assistant_id}, ensure_ascii=False)}\n\n"
+    )
+
+    assistant_content_parts: List[str] = []
+
+    async def _agent_events():
+        with use_attachment_session(session_id):
+            async for event in run_agent_loop(
+                chat_messages,
+                model=model,
+                cancel_event=cancel_event,
+                goal=turn_goal,
+                previous_goal=previous_goal,
+            ):
+                yield event
+
+    async for event in _agent_events():
+        etype = event.get("type")
+        mapped = None
+        if etype in (
+            "tool_start",
+            "tool_result",
+            "turn_goal",
+            "progress_checkpoint",
+            "await_approval",
+            "diff",
+            "shell",
+            "memory",
+            "token",
+            "error",
+        ):
+            mapped = writer.note_sse(event)
+
+        if etype == "token":
+            assistant_content_parts.append(event["content"])
+            yield f"event: token\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        elif etype == "turn_goal":
+            yield f"event: turn_goal\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        elif etype == "progress_checkpoint":
+            yield f"event: progress_checkpoint\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        elif etype == "tools_disabled":
+            emit_audit(
+                session_local,
+                "tools.disabled",
+                payload={
+                    "message": event.get("message"),
+                    "reason": event.get("reason"),
+                    "model": model_name,
+                },
+                session_id=session_id,
+            )
+            yield f"event: tools_disabled\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        elif etype in ("tool_start", "tool_result", "diff", "shell", "memory", "await_approval"):
+            if etype == "memory" and event.get("status") == "applied":
+                emit_audit(
+                    session_local,
+                    "memory.write",
+                    payload={"id": event.get("memory_id"), "auto": not agent_cfg.get("confirm_memory", True)},
+                    session_id=session_id,
+                )
+            elif etype == "memory" and event.get("status") == "rejected":
+                emit_audit(
+                    session_local,
+                    "memory.reject",
+                    payload={"id": event.get("memory_id")},
+                    session_id=session_id,
+                )
+            out = dict(event)
+            if mapped:
+                if mapped.get("full_ref"):
+                    out["full_ref"] = mapped["full_ref"]
+                if mapped.get("truncated"):
+                    out["truncated"] = mapped["truncated"]
+                if mapped.get("summary") and etype == "tool_result":
+                    out["summary"] = mapped["summary"]
+            yield f"event: {etype}\ndata: {json.dumps(out, ensure_ascii=False)}\n\n"
+        elif etype == "error":
+            writer.finalize_interrupted(
+                code=str(event.get("code") or "ERROR"),
+                message=str(event.get("message") or "error"),
+            )
+            yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            return
+        elif etype == "done":
+            full_content = "".join(assistant_content_parts).strip()
+            if not full_content:
+                writer.delete_placeholder()
+                yield (
+                    "event: error\ndata: "
+                    f"{json.dumps({'code': 'EMPTY_RESPONSE', 'message': '模型返回为空，请重试'}, ensure_ascii=False)}\n\n"
+                )
+                return
+            turn_meta = {
+                "type": "turn_meta",
+                "model": model_name,
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "approx_prompt_tokens": prompt_tokens,
+                "approx_completion_tokens": approx_tokens(full_content),
+                "compressed": compressed,
+                "memory_injected": memory_injected,
+                "goal": turn_goal,
+                "message_id": writer.assistant_id,
+            }
+            writer.finalize(
+                summary=json.dumps(turn_meta, ensure_ascii=False),
+                content=full_content,
+            )
+            emit_audit(
+                session_local,
+                "turn.complete",
+                payload={
+                    "model": model_name,
+                    "elapsed_ms": turn_meta["elapsed_ms"],
+                    "goal": turn_goal,
+                    "compressed": compressed,
+                    "message_id": writer.assistant_id,
+                    "approx_prompt_tokens": prompt_tokens,
+                    "approx_completion_tokens": turn_meta["approx_completion_tokens"],
+                },
+                session_id=session_id,
+            )
+            yield f"event: turn_meta\ndata: {json.dumps(turn_meta, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'message_id': writer.assistant_id}, ensure_ascii=False)}\n\n"
+
+
+async def _sse_detach_producer(agen_factory):
+    """
+    Relay an async generator to SSE consumers.
+
+    When the client disconnects (page refresh), the producer task keeps running
+    until the agent turn finishes. Only explicit POST /cancel should stop a turn.
+    """
+    queue: asyncio.Queue[tuple[str, object | None]] = asyncio.Queue()
+
+    async def run() -> None:
+        try:
+            async for item in agen_factory():
+                await queue.put(("item", item))
+            await queue.put(("eof", None))
+        except Exception as exc:
+            await queue.put(("exc", exc))
+
+    asyncio.create_task(run())
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "eof":
+                break
+            if kind == "item":
+                yield payload
+            elif kind == "exc":
+                yield (
+                    "event: error\ndata: "
+                    f"{json.dumps({'code': 'INTERNAL_ERROR', 'message': str(payload)}, ensure_ascii=False)}\n\n"
+                )
+                break
+    except asyncio.CancelledError:
+        # Client left; producer continues in background.
+        return
 
 
 def _load_prompt_file(workspace_root: str, filename: str) -> str:
@@ -133,12 +390,13 @@ def _system_prompt() -> str:
             "To change files, call propose_edit and wait for user Apply; "
             "never claim a file was written/created/modified unless a propose_edit "
             "tool result shows status=applied. "
+            "To delete a file, call propose_delete(path); do not use rm or helper scripts. "
             "To run tests or commands, call propose_shell with argv as a string array "
             '(e.g. ["pytest","-q"] or ["git","status"]); it waits for user approval. '
             "To remember durable user preferences/facts, call propose_memory. "
             "No shell piping/redirection. Prefer old_string+new_string after read_file. "
             "Paths and cwd are relative to the workspace root. "
-            "If a propose_edit/propose_shell/propose_memory is rejected and the user asks "
+            "If a propose_edit/propose_delete/propose_shell/propose_memory is rejected and the user asks "
             "to retry or revise the same request, you MUST call the same tool again instead "
             "of sending a plain text reply. "
             "If tools are unavailable, say so clearly and do not invent write or shell success."
@@ -174,6 +432,12 @@ def _system_prompt() -> str:
             "代码、命令、路径、英文术语保持半角原样。 "
             f"You have tools available: {tool_names}. "
             f"{workspace_hint} "
+            "If the user message includes an [附件] block with attachment ids, call read_attachment(attachment_id=...) to read those files (not workspace read_file). "
+            "When the user message is only attachments (or starts with 「（见附件）」) without an explicit instruction "
+            "(extract/save/write/create/convert/summarize-to-file/etc.), default to read-only: "
+            "call read_attachment if the file is text-readable, then give a short verbal summary in the reply; "
+            "do NOT call propose_edit, propose_delete, or propose_shell to extract/persist attachment contents "
+            "into the workspace, and do not invent helper scripts — unless the user explicitly asks to write files. "
             "When the user asks about weather, call get_weather. "
             "Do not invent tool results — always call the tool. "
             "When the user asks you to create, edit, or run something in the workspace, "
@@ -370,8 +634,43 @@ def assets_endpoint(db: Session = Depends(get_db)):
 
 
 @router.get("/api/audit", response_model=List[AuditEventResponse])
-def list_audit_endpoint(limit: int = 50, session_id: str | None = None, db: Session = Depends(get_db)):
-    events = list_audit_events(db, limit=limit, session_id=session_id)
+def list_audit_endpoint(
+    limit: int = 50,
+    session_id: str | None = None,
+    event_type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    events = list_audit_events(
+        db,
+        limit=limit,
+        session_id=session_id,
+        event_type=event_type,
+    )
+    return [AuditEventResponse(**audit_to_public(e)) for e in events]
+
+
+@router.get("/api/audit/sessions", response_model=List[AuditSessionSummary])
+def list_audit_sessions_endpoint(limit: int = 50, db: Session = Depends(get_db)):
+    """Sessions that have audit activity — for replay filter UI."""
+    return [AuditSessionSummary(**row) for row in list_audit_session_summaries(db, limit=limit)]
+
+
+@router.get("/api/sessions/{session_id}/audit", response_model=List[AuditEventResponse])
+def list_session_audit_endpoint(
+    session_id: str,
+    limit: int = 100,
+    event_type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    events = list_audit_events(
+        db,
+        limit=limit,
+        session_id=session_id,
+        event_type=event_type,
+    )
     return [AuditEventResponse(**audit_to_public(e)) for e in events]
 
 
@@ -604,12 +903,13 @@ async def retry_shell_endpoint(shell_id: str, db: Session = Depends(get_db)):
 
 @router.post("/api/sessions", response_model=SessionResponse)
 def create_session_endpoint(request: CreateSessionRequest, db: Session = Depends(get_db)):
-    session = create_session(db, title=request.title)
+    session = create_session(db, title=request.title, workspace_root=request.workspace_root)
     return SessionResponse(
         id=session.id,
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        workspace_root=session.workspace_root,
     )
 
 
@@ -624,6 +924,7 @@ def update_session_endpoint(session_id: str, request: CreateSessionRequest, db: 
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        workspace_root=session.workspace_root,
     )
 
 
@@ -646,15 +947,7 @@ def toggle_favorite_endpoint(message_id: str, request: FavoriteToggleRequest, db
     if message.role != Role.USER:
         raise HTTPException(status_code=400, detail="Only user messages can be favorited")
     message = toggle_message_favorite(db, message, request.is_favorite)
-    return MessageResponse(
-        id=message.id,
-        role=message.role.value,
-        content=message.content,
-        sequence=message.sequence,
-        is_favorite=message.is_favorite,
-        summary=message.summary or None,
-        created_at=message.created_at,
-    )
+    return _message_to_response(message)
 
 
 @router.get("/api/favorites", response_model=List[FavoriteItemResponse])
@@ -682,6 +975,7 @@ def list_sessions_endpoint(db: Session = Depends(get_db)):
             title=s.title,
             created_at=s.created_at,
             updated_at=s.updated_at,
+            workspace_root=s.workspace_root,
         )
         for s in sessions
     ]
@@ -693,18 +987,80 @@ def get_messages_endpoint(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     existing_messages = sorted(session.messages, key=lambda m: m.sequence)
-    return [
-        MessageResponse(
-            id=m.id,
-            role=m.role.value,
-            content=m.content,
-            sequence=m.sequence,
-            is_favorite=m.is_favorite,
-            summary=m.summary or None,
-            created_at=m.created_at,
-        )
-        for m in existing_messages
-    ]
+    return [_message_to_response(m) for m in existing_messages]
+
+
+
+
+@router.post("/api/sessions/{session_id}/attachments", response_model=AttachmentResponse)
+async def upload_attachment_endpoint(
+    session_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    data = await file.read()
+    try:
+        meta = save_upload(session, file.filename or "upload", data, file.content_type)
+    except AttachmentError as e:
+        status = 413 if e.code == "TOO_LARGE" else 400
+        raise HTTPException(status_code=status, detail={"code": e.code, "message": str(e)}) from e
+    emit_audit(
+        db,
+        "attachment.upload",
+        payload={"id": meta["id"], "filename": meta["filename"], "size": meta["size"]},
+        session_id=session_id,
+    )
+    return AttachmentResponse(
+        id=meta["id"],
+        filename=meta["filename"],
+        size=meta["size"],
+        content_type=meta.get("content_type"),
+        url=f"/api/sessions/{session_id}/attachments/{meta['id']}",
+    )
+
+
+@router.get("/api/sessions/{session_id}/attachments/{attachment_id}")
+def download_attachment_endpoint(
+    session_id: str,
+    attachment_id: str,
+    db: Session = Depends(get_db),
+):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    meta = load_meta(session, attachment_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        path = resolve_file(session, attachment_id)
+    except AttachmentError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return FileResponse(
+        path,
+        filename=meta.get("filename") or path.name,
+        media_type=meta.get("content_type") or "application/octet-stream",
+    )
+
+@router.get("/api/sessions/{session_id}/blobs")
+def get_session_blob_endpoint(
+    session_id: str,
+    ref: str = Query(..., min_length=1, description="file:turns/... ref from TurnEvent.full_ref"),
+    db: Session = Depends(get_db),
+):
+    """Fetch oversized tool payload spilled under session.data_path."""
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        text = read_session_blob(session, ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Blob not found") from None
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8")
 
 
 @router.post("/api/sessions/{session_id}/messages")
@@ -733,7 +1089,31 @@ async def send_message_endpoint(
         existing_messages = sorted(session.messages, key=lambda m: m.sequence)
         next_sequence = (existing_messages[-1].sequence + 1) if existing_messages else 1
 
-        user_message = add_message(db, session, Role.USER, request.content, next_sequence)
+        attachment_ids = list(request.attachment_ids or [])
+        metas = list_metas_for_ids(session, attachment_ids) if attachment_ids else []
+        if attachment_ids and len(metas) != len(attachment_ids):
+            found = {m["id"] for m in metas}
+            missing = [aid for aid in attachment_ids if aid not in found]
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "ATTACHMENT_NOT_FOUND", "message": f"unknown attachment_ids: {missing}"},
+            )
+
+        content_for_model = build_content_for_model(request.content or "", metas)
+        attachments_json = json.dumps(metas, ensure_ascii=False) if metas else "[]"
+
+        user_message = add_message(
+            db,
+            session,
+            Role.USER,
+            content_for_model,
+            next_sequence,
+            attachments=attachments_json,
+        )
+        assistant_sequence = next_sequence + 1
+        assistant_message = add_message(
+            db, session, Role.ASSISTANT, "", assistant_sequence, summary="", trace="[]",
+        )
 
         system_prompt = _system_prompt()
         memory_injected = bool(read_user_md().strip())
@@ -744,7 +1124,24 @@ async def send_message_endpoint(
             if not content:
                 continue
             chat_messages.append({"role": m.role.value, "content": content})
-        chat_messages.append({"role": "user", "content": request.content})
+        chat_messages.append({"role": "user", "content": content_for_model})
+
+        prev_goal = previous_turn_goal_from_messages(existing_messages)
+        turn_goal = extract_turn_goal(
+            content_for_model,
+            prior_user_texts_from_history(existing_messages),
+        )
+        goal_changed = bool(prev_goal) and not goals_equal(prev_goal, turn_goal)
+        if goal_changed:
+            _audit(
+                "goal.change",
+                {
+                    "previous_goal": prev_goal,
+                    "goal": turn_goal,
+                    "source": "extract",
+                },
+                session_id=session_id,
+            )
 
         agent_cfg = load_agent_settings()
         chat_messages, compressed = await compress_messages_if_needed(
@@ -752,112 +1149,49 @@ async def send_message_endpoint(
             auto_compress=agent_cfg["auto_compress"],
             context_limit=agent_cfg["context_limit"],
             summarize=_summarize_blob if provider.is_available() else None,
+            preserve_goal=turn_goal,
         )
         if compressed:
-            _audit("context.compress", {"session_id": session_id}, session_id=session_id)
+            _audit(
+                "context.compress",
+                {"session_id": session_id, "goal_preserved": bool(turn_goal)},
+                session_id=session_id,
+            )
 
         model_name = request.model or settings.llm_model
         prompt_tokens = approx_messages_tokens(chat_messages)
-        assistant_content_parts: List[str] = []
-        assistant_sequence = next_sequence + 1
         started = time.time()
 
         async def event_stream():
-            watcher = asyncio.create_task(watch_disconnect(http_request, cancel_event))
-            session_local = get_sessionmaker()()
-            try:
-                session_db = get_session(session_local, session_id)
-                if not session_db:
-                    yield f"event: error\ndata: {json.dumps({'code': 'SESSION_NOT_FOUND', 'message': 'Session not found'}, ensure_ascii=False)}\n\n"
-                    return
-
-                yield f"event: meta\ndata: {json.dumps({'message_id': user_message.id}, ensure_ascii=False)}\n\n"
-
-                async for event in run_agent_loop(
-                    chat_messages, model=request.model, cancel_event=cancel_event
-                ):
-                    etype = event.get("type")
-                    if etype == "token":
-                        assistant_content_parts.append(event["content"])
-                        yield f"event: token\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype == "tools_disabled":
-                        emit_audit(
-                            session_local,
-                            "tools.disabled",
-                            payload={
-                                "message": event.get("message"),
-                                "reason": event.get("reason"),
-                                "model": model_name,
-                            },
-                            session_id=session_id,
-                        )
-                        yield f"event: tools_disabled\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype in ("tool_start", "tool_result", "diff", "shell", "memory", "await_approval"):
-                        if etype == "memory" and event.get("status") == "applied":
-                            emit_audit(
-                                session_local,
-                                "memory.write",
-                                payload={"id": event.get("memory_id"), "auto": not agent_cfg.get("confirm_memory", True)},
-                                session_id=session_id,
-                            )
-                        elif etype == "memory" and event.get("status") == "rejected":
-                            emit_audit(
-                                session_local,
-                                "memory.reject",
-                                payload={"id": event.get("memory_id")},
-                                session_id=session_id,
-                            )
-                        yield f"event: {etype}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype == "error":
-                        yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                        return
-                    elif etype == "done":
-                        full_content = "".join(assistant_content_parts).strip()
-                        if not full_content:
-                            yield (
-                                "event: error\ndata: "
-                                f"{json.dumps({'code': 'EMPTY_RESPONSE', 'message': '模型返回为空，请重试'}, ensure_ascii=False)}\n\n"
-                            )
-                            return
-                        assistant_message = add_message(
-                            session_local, session_db, Role.ASSISTANT, full_content, assistant_sequence,
-                            summary=json.dumps({
-                                "type": "turn_meta",
-                                "model": model_name,
-                                "elapsed_ms": int((time.time() - started) * 1000),
-                                "approx_prompt_tokens": prompt_tokens,
-                                "approx_completion_tokens": approx_tokens(full_content),
-                                "compressed": compressed,
-                                "memory_injected": memory_injected,
-                                "message_id": "PENDING",
-                            }, ensure_ascii=False),
-                        )
-                        turn_meta = {
-                            "type": "turn_meta",
-                            "model": model_name,
-                            "elapsed_ms": int((time.time() - started) * 1000),
-                            "approx_prompt_tokens": prompt_tokens,
-                            "approx_completion_tokens": approx_tokens(full_content),
-                            "compressed": compressed,
-                            "memory_injected": memory_injected,
-                            "message_id": assistant_message.id,
-                        }
-                        assistant_message.summary = json.dumps(turn_meta, ensure_ascii=False)
-                        session_local.add(assistant_message)
-                        session_local.commit()
-                        yield f"event: turn_meta\ndata: {json.dumps(turn_meta, ensure_ascii=False)}\n\n"
-                        yield f"event: done\ndata: {json.dumps({'message_id': assistant_message.id}, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                yield f"event: error\ndata: {json.dumps({'code': 'INTERNAL_ERROR', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            finally:
-                cancel_event.set()
-                watcher.cancel()
+            async def produce():
+                session_local = get_sessionmaker()()
                 try:
-                    await watcher
-                except Exception:
-                    pass
-                end_turn(session_id)
-                session_local.close()
+                    async for line in _agent_turn_event_stream(
+                        session_id=session_id,
+                        session_local=session_local,
+                        session_db=get_session(session_local, session_id),
+                        user_message_id=user_message.id,
+                        assistant_message_id=assistant_message.id,
+                        chat_messages=chat_messages,
+                        turn_goal=turn_goal,
+                        previous_goal=prev_goal if goal_changed else None,
+                        model=request.model,
+                        model_name=model_name,
+                        cancel_event=cancel_event,
+                        compressed=compressed,
+                        memory_injected=memory_injected,
+                        prompt_tokens=prompt_tokens,
+                        started=started,
+                        http_request=http_request,
+                        agent_cfg=agent_cfg,
+                    ):
+                        yield line
+                finally:
+                    end_turn(session_id)
+                    session_local.close()
+
+            async for line in _sse_detach_producer(produce):
+                yield line
 
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_sse_headers())
     except Exception:
@@ -915,116 +1249,76 @@ async def regenerate_endpoint(
             chat_messages.append({"role": m.role.value, "content": content})
         chat_messages.append({"role": "user", "content": user_message.content})
 
+        prev_goal = previous_turn_goal_from_messages(history)
+        turn_goal = extract_turn_goal(
+            user_message.content or "",
+            prior_user_texts_from_history(history),
+        )
+        goal_changed = bool(prev_goal) and not goals_equal(prev_goal, turn_goal)
+        if goal_changed:
+            _audit(
+                "goal.change",
+                {
+                    "previous_goal": prev_goal,
+                    "goal": turn_goal,
+                    "source": "regenerate",
+                },
+                session_id=session_id,
+            )
+
         agent_cfg = load_agent_settings()
         chat_messages, compressed = await compress_messages_if_needed(
             chat_messages,
             auto_compress=agent_cfg["auto_compress"],
             context_limit=agent_cfg["context_limit"],
             summarize=_summarize_blob if provider.is_available() else None,
+            preserve_goal=turn_goal,
         )
         if compressed:
-            _audit("context.compress", {"session_id": session_id}, session_id=session_id)
+            _audit(
+                "context.compress",
+                {"session_id": session_id, "goal_preserved": bool(turn_goal)},
+                session_id=session_id,
+            )
 
         model_name = model or settings.llm_model
         prompt_tokens = approx_messages_tokens(chat_messages)
-        assistant_content_parts: List[str] = []
         assistant_sequence = user_message.sequence + 1
+        assistant_message = add_message(
+            db, session, Role.ASSISTANT, "", assistant_sequence, summary="", trace="[]",
+        )
         started = time.time()
 
         async def event_stream():
-            watcher = asyncio.create_task(watch_disconnect(http_request, cancel_event))
-            session_local = get_sessionmaker()()
-            try:
-                session_db = get_session(session_local, session_id)
-                if not session_db:
-                    yield f"event: error\ndata: {json.dumps({'code': 'SESSION_NOT_FOUND', 'message': 'Session not found'}, ensure_ascii=False)}\n\n"
-                    return
-
-                yield f"event: meta\ndata: {json.dumps({'message_id': user_message.id}, ensure_ascii=False)}\n\n"
-
-                async for event in run_agent_loop(chat_messages, model=model, cancel_event=cancel_event):
-                    etype = event.get("type")
-                    if etype == "token":
-                        assistant_content_parts.append(event["content"])
-                        yield f"event: token\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype == "tools_disabled":
-                        emit_audit(
-                            session_local,
-                            "tools.disabled",
-                            payload={
-                                "message": event.get("message"),
-                                "reason": event.get("reason"),
-                                "model": model_name,
-                            },
-                            session_id=session_id,
-                        )
-                        yield f"event: tools_disabled\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype in ("tool_start", "tool_result", "diff", "shell", "memory", "await_approval"):
-                        if etype == "memory" and event.get("status") == "applied":
-                            emit_audit(
-                                session_local,
-                                "memory.write",
-                                payload={"id": event.get("memory_id"), "auto": not agent_cfg.get("confirm_memory", True)},
-                                session_id=session_id,
-                            )
-                        elif etype == "memory" and event.get("status") == "rejected":
-                            emit_audit(
-                                session_local,
-                                "memory.reject",
-                                payload={"id": event.get("memory_id")},
-                                session_id=session_id,
-                            )
-                        yield f"event: {etype}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    elif etype == "error":
-                        yield f"event: error\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                        return
-                    elif etype == "done":
-                        full_content = "".join(assistant_content_parts).strip()
-                        if not full_content:
-                            yield (
-                                "event: error\ndata: "
-                                f"{json.dumps({'code': 'EMPTY_RESPONSE', 'message': '模型返回为空，请重试'}, ensure_ascii=False)}\n\n"
-                            )
-                            return
-                        assistant_message = add_message(
-                            session_local, session_db, Role.ASSISTANT, full_content, assistant_sequence,
-                            summary=json.dumps({
-                                "type": "turn_meta",
-                                "model": model_name,
-                                "elapsed_ms": int((time.time() - started) * 1000),
-                                "approx_prompt_tokens": prompt_tokens,
-                                "approx_completion_tokens": approx_tokens(full_content),
-                                "compressed": compressed,
-                                "memory_injected": memory_injected,
-                                "message_id": "PENDING",
-                            }, ensure_ascii=False),
-                        )
-                        turn_meta = {
-                            "type": "turn_meta",
-                            "model": model_name,
-                            "elapsed_ms": int((time.time() - started) * 1000),
-                            "approx_prompt_tokens": prompt_tokens,
-                            "approx_completion_tokens": approx_tokens(full_content),
-                            "compressed": compressed,
-                            "memory_injected": memory_injected,
-                            "message_id": assistant_message.id,
-                        }
-                        assistant_message.summary = json.dumps(turn_meta, ensure_ascii=False)
-                        session_local.add(assistant_message)
-                        session_local.commit()
-                        yield f"event: turn_meta\ndata: {json.dumps(turn_meta, ensure_ascii=False)}\n\n"
-                        yield f"event: done\ndata: {json.dumps({'message_id': assistant_message.id}, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                yield f"event: error\ndata: {json.dumps({'code': 'INTERNAL_ERROR', 'message': str(e)}, ensure_ascii=False)}\n\n"
-            finally:
-                cancel_event.set()
-                watcher.cancel()
+            async def produce():
+                session_local = get_sessionmaker()()
                 try:
-                    await watcher
-                except Exception:
-                    pass
-                end_turn(session_id)
-                session_local.close()
+                    async for line in _agent_turn_event_stream(
+                        session_id=session_id,
+                        session_local=session_local,
+                        session_db=get_session(session_local, session_id),
+                        user_message_id=user_message.id,
+                        assistant_message_id=assistant_message.id,
+                        chat_messages=chat_messages,
+                        turn_goal=turn_goal,
+                        previous_goal=prev_goal if goal_changed else None,
+                        model=model,
+                        model_name=model_name,
+                        cancel_event=cancel_event,
+                        compressed=compressed,
+                        memory_injected=memory_injected,
+                        prompt_tokens=prompt_tokens,
+                        started=started,
+                        http_request=http_request,
+                        agent_cfg=agent_cfg,
+                    ):
+                        yield line
+                finally:
+                    end_turn(session_id)
+                    session_local.close()
+
+            async for line in _sse_detach_producer(produce):
+                yield line
 
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_sse_headers())
     except HTTPException:
@@ -1033,3 +1327,4 @@ async def regenerate_endpoint(
     except Exception:
         end_turn(session_id)
         raise
+

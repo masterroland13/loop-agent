@@ -23,6 +23,7 @@
 - commit message 用英文短句概括 why，例如 `hunk-level partial apply: per-block checkboxes in DiffPanel + apply-partial API`。
 - 仓库未配 git 身份，用一次性参数：`git -c user.name=caapap -c user.email=caapap@localhost commit`。
 - 每次提交前往 `CHANGELOG.md` 的 `[Unreleased]` 加条目。
+- **Foundation 进度**：改动 F1–F9 或 §0.4 相关行为时，同步更新 [`docs/foundation-status.md`](docs/foundation-status.md)（进度、占比、backlog、§0.4 勾选）；方案/三档定义改 [`docs/foundation-f4-f6-plan.md`](docs/foundation-f4-f6-plan.md)。
 
 ## 模型行为防线
 

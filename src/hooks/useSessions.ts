@@ -6,9 +6,10 @@ import {
   updateSessionTitle as updateSessionTitleApi,
   type Session as ApiSession,
 } from '../api/agent'
+import { normalizeRoot, projectIdFromRoot } from './useWorkspaces'
 
 export function useApiSessions(
-  onAssignWorkspace?: (sessionId: string) => void,
+  onAssignWorkspace?: (sessionId: string, projectId?: string) => void,
   onRemoveWorkspace?: (sessionId: string) => void,
 ) {
   const [sessions, setSessions] = useState<ApiSession[]>([])
@@ -18,11 +19,16 @@ export function useApiSessions(
   const hasAutoCreated = useRef(false)
 
   const createSession = useCallback(
-    async (title: string) => {
-      const session = await createSessionApi(title)
+    async (title: string, projectId?: string, workspaceRoot?: string | null) => {
+      const root = (workspaceRoot ?? '').trim() || null
+      let assignId = projectId
+      if (!assignId && root) {
+        assignId = projectIdFromRoot(normalizeRoot(root))
+      }
+      const session = await createSessionApi(title, root)
       setSessions((prev) => [session, ...prev])
       setActiveSessionId(session.id)
-      onAssignWorkspace?.(session.id)
+      onAssignWorkspace?.(session.id, assignId)
       return session
     },
     [onAssignWorkspace],
@@ -37,6 +43,7 @@ export function useApiSessions(
         setActiveSessionId((current) => current ?? list[0].id)
       } else if (!hasAutoCreated.current) {
         hasAutoCreated.current = true
+        // No sessions yet: leave unbound (no active project root here).
         await createSession('新对话')
       }
     } catch (err) {
@@ -83,7 +90,11 @@ export function useApiSessions(
       }
       onRemoveWorkspace?.(sessionId)
       let shouldCreate = false
+      let deletedRoot: string | null = null
       setSessions((prev) => {
+        const deleted = prev.find((session) => session.id === sessionId)
+        const raw = deleted?.workspace_root
+        deletedRoot = (raw ?? '').trim() || null
         const next = prev.filter((session) => session.id !== sessionId)
         shouldCreate = next.length === 0
         setActiveSessionId((current) => {
@@ -94,7 +105,10 @@ export function useApiSessions(
       })
       if (shouldCreate) {
         hasAutoCreated.current = true
-        await createSession('新对话')
+        const pid = deletedRoot
+          ? projectIdFromRoot(normalizeRoot(deletedRoot))
+          : undefined
+        await createSession('新对话', pid, deletedRoot)
       }
     },
     [createSession, onRemoveWorkspace],

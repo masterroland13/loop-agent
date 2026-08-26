@@ -62,6 +62,7 @@ class PendingPatch:
     new_content: str
     unified_diff: str
     is_new_file: bool
+    is_delete: bool = False
     status: PatchStatus = PatchStatus.PENDING
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -91,6 +92,7 @@ def _save_patches() -> None:
                 "new_content": p.new_content,
                 "unified_diff": p.unified_diff,
                 "is_new_file": p.is_new_file,
+                "is_delete": p.is_delete,
                 "status": p.status.value,
                 "error": p.error,
                 "created_at": p.created_at,
@@ -135,6 +137,7 @@ def load_persisted_patches() -> int:
             new_content=item.get("new_content") or "",
             unified_diff=item.get("unified_diff") or "",
             is_new_file=bool(item.get("is_new_file")),
+            is_delete=bool(item.get("is_delete")),
             status=status,
             error=item.get("error"),
             created_at=float(item.get("created_at") or time.time()),
@@ -263,6 +266,50 @@ def create_patch_from_content(path: str, content: str) -> PendingPatch:
     return patch
 
 
+
+def create_patch_for_delete(path: str) -> PendingPatch:
+    """Propose deleting an existing file; disk unlink happens on Apply."""
+    require_root()
+    target = resolve_in_workspace(path)
+    root = require_root()
+    rel_path = str(target.relative_to(root)).replace("\\", "/")
+
+    if not target.exists():
+        raise WorkspaceError(f"file does not exist: {rel_path}", "NOT_FOUND")
+    if not target.is_file():
+        raise WorkspaceError(f"not a file: {rel_path}", "NOT_A_FILE")
+
+    raw = target.read_bytes()
+    if len(raw) > MAX_EDIT_BYTES:
+        old_content = ""
+        unified = (
+            f"--- a/{rel_path}\n+++ /dev/null\n@@ delete @@\n"
+            "(file too large to preview; will be deleted)\n"
+        )
+    elif b"\x00" in raw[:4096]:
+        old_content = ""
+        unified = (
+            f"--- a/{rel_path}\n+++ /dev/null\n@@ delete @@\n"
+            "(binary file; will be deleted)\n"
+        )
+    else:
+        old_content = raw.decode("utf-8", errors="replace")
+        unified = build_unified_diff(rel_path, old_content, "")
+
+    patch = PendingPatch(
+        id=str(uuid.uuid4()),
+        path=rel_path,
+        old_content=old_content,
+        new_content="",
+        unified_diff=unified,
+        is_new_file=False,
+        is_delete=True,
+    )
+    _patches[patch.id] = patch
+    _save_patches()
+    return patch
+
+
 def get_patch(patch_id: str) -> Optional[PendingPatch]:
     return _patches.get(patch_id)
 
@@ -273,6 +320,7 @@ def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
         "path": patch.path,
         "unified_diff": patch.unified_diff,
         "is_new_file": patch.is_new_file,
+        "is_delete": patch.is_delete,
         "status": patch.status.value,
         "error": patch.error,
     }
@@ -311,6 +359,19 @@ def cancel_pending_patches() -> int:
 
 def apply_patch_to_disk(patch: PendingPatch) -> None:
     target = resolve_in_workspace(patch.path)
+    if patch.is_delete:
+        if not target.exists():
+            raise WorkspaceError("file disappeared; abort", "CONFLICT")
+        if not target.is_file():
+            raise WorkspaceError(f"not a file: {patch.path}", "NOT_A_FILE")
+        # Best-effort conflict check when we captured textual content at propose time.
+        if patch.old_content:
+            current = target.read_text(encoding="utf-8", errors="replace")
+            if current != patch.old_content:
+                raise WorkspaceError("file changed on disk since proposal; abort", "CONFLICT")
+        target.unlink()
+        return
+
     # Re-check old content for non-new files (prevent clobber if changed underfoot)
     if patch.is_new_file:
         if target.exists():
@@ -402,6 +463,8 @@ async def apply_partial_patch(patch_id: str, hunk_ids: List[int]) -> PendingPatc
         raise WorkspaceError("patch not found", "NOT_FOUND")
     if patch.status != PatchStatus.PENDING:
         raise WorkspaceError(f"patch already {patch.status.value}", "ALREADY_DECIDED")
+    if patch.is_delete:
+        raise WorkspaceError("delete patches cannot be partially applied", "INVALID")
 
     hunks = parse_hunks(patch.unified_diff)
     if not hunks:

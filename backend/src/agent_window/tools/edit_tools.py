@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict
 
 from agent_window.services.patches import (
+    create_patch_for_delete,
     create_patch_from_content,
     create_patch_from_replace,
     patch_to_public,
@@ -60,6 +61,25 @@ async def propose_edit_tool(args: Dict[str, Any]) -> str:
         return _err(e)
 
 
+async def propose_delete_tool(args: Dict[str, Any]) -> str:
+    """Propose deleting a file. Disk unlink waits for user Apply/Reject."""
+    try:
+        path = (args.get("path") or "").strip()
+        if not path:
+            raise WorkspaceError("path is required", "INVALID_PATH")
+        patch = create_patch_for_delete(path)
+        public = patch_to_public(patch)
+        return json.dumps(
+            {
+                AWAIT_PATCH_KEY: True,
+                "patch": public,
+                "message": "Delete proposed; waiting for user Apply/Reject.",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return _err(e)
+
 def register_edit_tools() -> None:
     if registry.get("propose_edit"):
         return
@@ -70,7 +90,8 @@ def register_edit_tools() -> None:
             "Propose a file change in the workspace. Does NOT write until the user approves. "
             "Prefer search-replace: path + old_string + new_string (old_string must be unique). "
             "For new files or full rewrites, pass path + content. "
-            "Always read_file first when editing existing files."
+            "Always read_file first when editing existing files. "
+            "To delete a file, call propose_delete instead - do not use rm or helper scripts."
         ),
         parameters={
             "type": "object",
@@ -97,6 +118,27 @@ def register_edit_tools() -> None:
         },
         handler=propose_edit_tool,
     )
-
+    registry.register(
+        name="propose_delete",
+        description=(
+            "Propose deleting a file in the workspace. Does NOT delete until the user approves. "
+            "Path must exist and be a normal file under the workspace. "
+            "Do not use shell rm or write helper scripts to delete files."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to workspace root",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=propose_delete_tool,
+    )
 
 register_edit_tools()
+
+

@@ -224,6 +224,33 @@ def _binary_name(token: str) -> str:
     return Path(token).name
 
 
+def resolve_hal_python() -> str:
+    """Prefer Hal backend venv interpreter; fall back to python3 on PATH."""
+    # …/backend/src/agent_window/services/shell.py → backend/
+    backend_root = Path(__file__).resolve().parents[3]
+    for candidate in (
+        backend_root / ".venv" / "bin" / "python",
+        backend_root / ".venv" / "Scripts" / "python.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return "python3"
+
+
+def normalize_shell_argv(argv: List[str]) -> List[str]:
+    """
+    Rewrite bare `python` to Hal venv / python3 so WSL/openEuler hosts work.
+
+    Leaves python3, absolute paths, and other binaries unchanged.
+    """
+    if not argv:
+        return list(argv)
+    head = str(argv[0])
+    if head != "python":
+        return list(argv)
+    return [resolve_hal_python(), *[str(a) for a in argv[1:]]]
+
+
 def validate_argv(argv: List[str]) -> List[str]:
     if not argv or not isinstance(argv, list):
         raise WorkspaceError("argv must be a non-empty list", "INVALID_ARGV")
@@ -275,7 +302,7 @@ def validate_argv(argv: List[str]) -> List[str]:
 
 def create_shell_proposal(argv: List[str], cwd: str = ".") -> PendingShell:
     require_root()
-    cleaned = validate_argv(argv)
+    cleaned = normalize_shell_argv(validate_argv(argv))
     cwd_rel = (cwd or ".").strip() or "."
     cwd_path = resolve_in_workspace(cwd_rel)
     if not cwd_path.is_dir():

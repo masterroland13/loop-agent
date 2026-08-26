@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PendingShell } from '../types'
 
 interface ShellPanelProps {
@@ -9,22 +9,71 @@ interface ShellPanelProps {
   busyId?: string | null
 }
 
+function isActionable(status: PendingShell['status']) {
+  return (
+    status === 'pending' ||
+    status === 'running' ||
+    status === 'failed' ||
+    status === 'timeout' ||
+    status === 'rejected'
+  )
+}
+
 export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: ShellPanelProps) {
   const cards = shells.filter((s) => s.status !== 'cancelled')
+  const actionable = cards.filter((s) => isActionable(s.status))
+  const done = cards.filter((s) => s.status === 'done')
+  const [showDone, setShowDone] = useState(false)
+
   if (cards.length === 0) return null
 
   return (
-    <div className="mx-auto mb-3 w-full max-w-3xl space-y-3">
-      {cards.map((shell) => (
-        <ShellCard
-          key={shell.id}
-          shell={shell}
-          busy={busyId === shell.id || shell.status === 'running'}
-          onApply={() => onApply(shell.id)}
-          onReject={() => onReject(shell.id)}
-          onRetry={onRetry ? () => onRetry(shell.id) : undefined}
-        />
-      ))}
+    <div className="mx-auto mb-3 w-full max-w-3xl">
+      <div className="max-h-[min(36vh,280px)] space-y-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
+        {actionable.map((shell) => (
+          <ShellCard
+            key={shell.id}
+            shell={shell}
+            busy={busyId === shell.id || shell.status === 'running'}
+            onApply={() => onApply(shell.id)}
+            onReject={() => onReject(shell.id)}
+            onRetry={onRetry ? () => onRetry(shell.id) : undefined}
+          />
+        ))}
+        {done.length > 0 && (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)]">
+            <button
+              type="button"
+              onClick={() => setShowDone((v) => !v)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-h)]"
+            >
+              <span className="text-[var(--text-dim)]">{showDone ? '▾' : '▸'}</span>
+              <span>
+                已完成 {done.length} 条命令
+                {!showDone && (
+                  <span className="ml-1.5 text-[var(--text-dim)]">
+                    （点击展开，避免占满屏幕）
+                  </span>
+                )}
+              </span>
+            </button>
+            {showDone && (
+              <div className="space-y-2 border-t border-[var(--border-subtle)] px-2 pb-2 pt-2">
+                {done.map((shell) => (
+                  <ShellCard
+                    key={shell.id}
+                    shell={shell}
+                    busy={false}
+                    onApply={() => onApply(shell.id)}
+                    onReject={() => onReject(shell.id)}
+                    onRetry={onRetry ? () => onRetry(shell.id) : undefined}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -46,8 +95,15 @@ function ShellCard({
   const rejected = shell.status === 'rejected'
   const failed = shell.status === 'failed' || shell.status === 'timeout'
   const retryable = failed || rejected
-  const [expanded, setExpanded] = useState(pending || shell.status === 'running' || failed || rejected)
+  const wantsOpen = pending || shell.status === 'running' || failed || rejected
+  const [expanded, setExpanded] = useState(wantsOpen)
   const [copied, setCopied] = useState(false)
+
+  // Pending→done used to leave cards stuck open and flood the viewport.
+  useEffect(() => {
+    setExpanded(wantsOpen)
+  }, [shell.status, wantsOpen])
+
   const output = [shell.stdout, shell.stderr].filter(Boolean).join('\n').slice(0, 4000)
   const statusLabel =
     shell.status === 'done'
@@ -104,10 +160,10 @@ function ShellCard({
             </button>
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--text-dim)]">
-            <span>cwd: {shell.cwd}</span>
+            <span className="truncate">cwd: {shell.cwd}</span>
             <span
               className={[
-                'rounded px-1.5 py-0.5 text-[10px]',
+                'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
                 shell.status === 'done' && (shell.exit_code ?? 1) === 0
                   ? 'bg-emerald-500/15 text-emerald-300'
                   : shell.status === 'failed' ||
@@ -159,7 +215,7 @@ function ShellCard({
         </div>
       </div>
       {expanded && (output || shell.error) && (
-        <pre className="max-h-48 overflow-auto px-3 py-2 font-mono text-[11px] leading-5 text-[var(--text-muted)]">
+        <pre className="max-h-28 overflow-auto px-3 py-2 font-mono text-[11px] leading-5 text-[var(--text-muted)]">
           {shell.error ? <div className="text-red-400">{shell.error}</div> : null}
           {output || null}
         </pre>

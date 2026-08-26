@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CreateSessionRequest(BaseModel):
     title: str = Field(default="新对话", min_length=1, max_length=255)
+    workspace_root: str | None = Field(default=None, max_length=1024)
 
 
 class SessionResponse(BaseModel):
@@ -13,14 +14,33 @@ class SessionResponse(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    workspace_root: str | None = None
 
     class Config:
         from_attributes = True
 
 
+class AttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    size: int
+    content_type: str | None = None
+    url: str
+
+
 class MessageRequest(BaseModel):
-    content: str = Field(..., min_length=1, max_length=100000)
+    content: str = Field(default="", max_length=100000)
     model: str | None = Field(default=None, max_length=128)
+    attachment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_content_or_attachments(self):
+        text = (self.content or "").strip()
+        ids = [a for a in (self.attachment_ids or []) if a]
+        if not text and not ids:
+            raise ValueError("content or attachment_ids required")
+        self.attachment_ids = ids
+        return self
 
 
 class RegenerateRequest(BaseModel):
@@ -34,6 +54,8 @@ class MessageResponse(BaseModel):
     sequence: int
     is_favorite: bool
     summary: str | None = None
+    trace: list[dict] = Field(default_factory=list)
+    attachments: list[AttachmentResponse] = Field(default_factory=list)
     created_at: datetime
 
     class Config:
@@ -126,6 +148,8 @@ class AgentSettingsResponse(BaseModel):
     active_skills: List[str] = []
     approval_timeout_sec: int = 300
     disabled_tools: List[str] = []
+    max_tool_iters: int = 24
+    checkpoint_every_n_tools: int = 4
 
 
 class AgentSettingsUpdateRequest(BaseModel):
@@ -135,6 +159,8 @@ class AgentSettingsUpdateRequest(BaseModel):
     active_skills: List[str] | None = None
     approval_timeout_sec: int | None = Field(default=None, ge=30, le=3600)
     disabled_tools: List[str] | None = None
+    max_tool_iters: int | None = Field(default=None, ge=8, le=64)
+    checkpoint_every_n_tools: int | None = Field(default=None, ge=0, le=16)
 
 
 class LlmConfigResponse(BaseModel):
@@ -220,6 +246,12 @@ class AuditEmitRequest(BaseModel):
     event_type: str = Field(..., min_length=1, max_length=64)
     payload: dict | None = None
     session_id: str | None = None
+
+
+class AuditSessionSummary(BaseModel):
+    session_id: str
+    event_count: int
+    last_at: datetime | None = None
 
 
 class AssetsResponse(BaseModel):

@@ -9,6 +9,7 @@ import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from agent_window.agent.tool_dispatch import handle_function_call
+from agent_window.agent.observation import slim_tool_result
 from agent_window.services.agent_settings import load_agent_settings
 from agent_window.services.memory import MemoryStatus, decide_memory, wait_for_memory_decision
 from agent_window.services.patches import PatchStatus, wait_for_decision
@@ -22,7 +23,8 @@ from agent_window.tools.shell_tools import AWAIT_SHELL_KEY
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ITERS = 8
+# Fallback if settings missing; real cap comes from agent_settings.max_tool_iters.
+DEFAULT_MAX_TOOL_ITERS = 24
 
 _WRITE_CLAIM_RE = re.compile(
     r"("
@@ -54,16 +56,25 @@ _UNVERIFIED_WRITE_NOTE = (
     "如需改文件或跑命令，请明确要求并等待审批卡片。"
 )
 
-# After an approval gate, these statuses must NOT trigger another free-form LLM turn.
+# Gate policy (Foundation F3, revised):
+# - cancelled → stop turn
+# - rejected / partial → user decision; end with template (do not auto-continue)
+# - timeout / failed → continue_hint once; second time → template + end
 _GATE_STOP_STATUSES = frozenset({"cancelled"})
-_GATE_TEMPLATE_STATUSES = frozenset({"rejected", "timeout", "failed", "partial"})
+_GATE_END_STATUSES = frozenset({"rejected", "partial"})
+_GATE_RETRY_STATUSES = frozenset({"timeout", "failed"})
 _GATE_SUCCESS_STATUSES = frozenset({"applied", "done"})
-_GATE_TOOL_NAMES = frozenset({"propose_edit", "propose_shell", "propose_memory"})
+_GATE_TOOL_NAMES = frozenset({"propose_edit", "propose_delete", "propose_shell", "propose_memory"})
+
+# Back-compat: statuses that used to force a template close (reject + retry-exhausted)
+_GATE_TEMPLATE_STATUSES = _GATE_END_STATUSES | _GATE_RETRY_STATUSES
+_GATE_CONTINUE_STATUSES = _GATE_RETRY_STATUSES  # only timeout/failed may soft-continue
 
 
-def _gate_user_message(kind: str, parsed: Dict[str, Any]) -> str:
-    """Fixed Chinese closing line — avoids model essays after Reject/timeout/fail."""
+def _gate_user_message(kind: str, parsed: Dict[str, Any], *, after_retry: bool = False) -> str:
+    """Human-readable gate outcome (closing line or continue_hint body)."""
     status = str(parsed.get("status") or "")
+    retry_prefix = "已自动换手段重试仍未成功。" if after_retry else ""
     if kind == "patch":
         path = parsed.get("path") or "该文件"
         if status == "partial":
@@ -75,27 +86,55 @@ def _gate_user_message(kind: str, parsed: Dict[str, Any]) -> str:
         if status == "rejected":
             return (
                 f"已拒绝修改 `{path}`，未写入磁盘。"
-                "是否继续执行？直接回复「继续改」或说明新的改法即可。"
+                "若要换方案，请再说一次要怎么改。"
             )
         if status == "timeout":
-            return f"审批超时，`{path}` 未写入。需要的话请再说一次修改请求。"
-        return f"修改 `{path}` 失败：{parsed.get('error') or '未知错误'}。可以重试或换一种改法。"
+            return (
+                f"{retry_prefix}审批超时，`{path}` 未写入。"
+                "需要的话请再说一次修改请求。"
+            )
+        return (
+            f"{retry_prefix}修改 `{path}` 失败：{parsed.get('error') or '未知错误'}。"
+            "可以说明新的改法后重试。"
+        )
     if kind == "shell":
         cmd = parsed.get("command") or "该命令"
         if status == "rejected":
             return (
                 f"已拒绝执行 `{cmd}`。"
-                "是否继续执行？直接回复「继续执行」或给出新命令即可。"
+                "若要换命令，请直接给出新命令。"
             )
         if status == "timeout":
-            return f"命令审批/执行超时：`{cmd}`。需要的话请重试。"
-        return f"命令失败：`{cmd}` — {parsed.get('error') or '未知错误'}。"
+            return f"{retry_prefix}命令审批/执行超时：`{cmd}`。需要的话请重试。"
+        return (
+            f"{retry_prefix}命令失败：`{cmd}` — {parsed.get('error') or '未知错误'}。"
+        )
     # memory
     if status == "rejected":
-        return "已拒绝写入记忆。是否仍要保存？请再说一次要记住的内容。"
+        return "已拒绝写入记忆。若仍要保存，请再说一次要记住的内容。"
     if status == "timeout":
-        return "记忆审批超时，未写入。需要的话请重试。"
-    return f"记忆写入失败：{parsed.get('error') or '未知错误'}。"
+        return f"{retry_prefix}记忆审批超时，未写入。需要的话请重试。"
+    return f"{retry_prefix}记忆写入失败：{parsed.get('error') or '未知错误'}。"
+
+
+def _enrich_gate_result_for_continue(
+    result: str,
+    kind: str,
+    parsed: Dict[str, Any],
+    goal: Optional[str] = None,
+) -> str:
+    """One-shot continue hint for timeout/failed (not for user Reject)."""
+    data = dict(parsed) if parsed else {}
+    human = _gate_user_message(kind, data)
+    goal_bit = f"本轮目标仍是：{goal}。" if (goal or "").strip() else ""
+    data["continue_hint"] = (
+        f"{human} {goal_bit}"
+        "这是唯一一次自动续环：请立刻换手段重试一次，或向用户说明阻塞；"
+        "若再次失败/超时，本轮将结束并告知用户。"
+        "禁止仅用文字声称已完成写盘/执行。"
+    )
+    data["loop_continue"] = True
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _gate_kind_from_result(parsed: Dict[str, Any]) -> Optional[str]:
@@ -151,6 +190,7 @@ async def _handle_patch_gate(
             "path": patch["path"],
             "unified_diff": patch["unified_diff"],
             "is_new_file": patch.get("is_new_file", False),
+            "is_delete": patch.get("is_delete", False),
             "status": "pending",
         },
         None,
@@ -169,6 +209,7 @@ async def _handle_patch_gate(
             "path": decided.path,
             "unified_diff": decided.unified_diff,
             "is_new_file": decided.is_new_file,
+            "is_delete": decided.is_delete,
             "status": status.value,
             "error": decided.error,
         },
@@ -194,7 +235,7 @@ async def _handle_patch_gate(
             "status": "rejected",
             "patch_id": patch_id,
             "path": decided.path,
-            "message": "User rejected the edit. If the user asks to retry or revise, call propose_edit again; do not reply with text only.",
+            "message": "User rejected the edit. If the user asks to retry or revise, call propose_edit or propose_delete again; do not reply with text only.",
         }
     elif status == PatchStatus.FAILED:
         result = {
@@ -388,26 +429,59 @@ async def run_agent_loop(
     messages: List[Dict[str, Any]],
     model: Optional[str] = None,
     cancel_event: Optional[asyncio.Event] = None,
+    goal: Optional[str] = None,
+    previous_goal: Optional[str] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     Yields SSE-oriented events:
+      - turn_goal (when a Goal is active)
+      - progress_checkpoint (interval or after gate return; reply when model narrates)
       - tool_start / tool_result
       - diff / shell / await_approval
       - tools_disabled / token / error / done
     """
     import agent_window.tools  # noqa: F401
 
+    from agent_window.agent.goal import inject_goal_into_messages
+    from agent_window.agent.checkpoint import (
+        clip_checkpoint_reply,
+        format_checkpoint_user_message,
+        should_checkpoint,
+    )
+    from agent_window.agent.checkpoint import checkpoint_interval_from_settings
+
     agent_cfg = load_agent_settings()
     disabled_tools = set(agent_cfg.get("disabled_tools") or [])
+    try:
+        max_tool_iters = int(agent_cfg.get("max_tool_iters") or DEFAULT_MAX_TOOL_ITERS)
+    except (TypeError, ValueError):
+        max_tool_iters = DEFAULT_MAX_TOOL_ITERS
+    max_tool_iters = max(8, min(64, max_tool_iters))
+    checkpoint_every_n = checkpoint_interval_from_settings(
+        agent_cfg.get("checkpoint_every_n_tools"),
+    )
     tools = [
         t for t in registry.get_openai_tools()
         if t.get("function", {}).get("name") not in disabled_tools
     ]
+    turn_goal = (goal or "").strip() or None
+    prev_goal = (previous_goal or "").strip() or None
     working = list(messages)
+    if turn_goal:
+        working = inject_goal_into_messages(working, turn_goal)
+        event: Dict[str, Any] = {"type": "turn_goal", "goal": turn_goal}
+        if prev_goal and prev_goal != turn_goal:
+            event["previous_goal"] = prev_goal
+        yield event
     write_gate_seen = False
     shell_gate_seen = False
+    # timeout/failed may soft-continue at most once per turn
+    gate_retry_used = False
+    tools_since_checkpoint = 0
+    # After injecting a checkpoint user msg, capture the next model narration for UI.
+    pending_checkpoint: Optional[Dict[str, Any]] = None
 
-    for _ in range(MAX_TOOL_ITERS):
+    for _ in range(max_tool_iters):
         if cancel_event is not None and cancel_event.is_set():
             yield {"type": "error", "code": "TURN_CANCELLED", "message": "已停止"}
             return
@@ -428,6 +502,24 @@ async def run_agent_loop(
         tool_calls = turn.get("tool_calls") or []
         content = (turn.get("content") or "").strip()
         tools_fallback = bool(turn.get("tools_fallback"))
+
+        # Mid-loop checkpoint reply: model wrote progress then continues with tools.
+        # Final-only / tools-without-narration: settle so UI leaves "等待说明".
+        if pending_checkpoint is not None:
+            reply = clip_checkpoint_reply(content) if content and tool_calls else ""
+            event: Dict[str, Any] = {
+                "type": "progress_checkpoint",
+                "goal": pending_checkpoint.get("goal"),
+                "tools_since_last": pending_checkpoint.get("tools_since_last"),
+                "reason": pending_checkpoint.get("reason"),
+            }
+            if reply:
+                event["reply"] = reply
+            else:
+                # Model skipped narration (tools-only or final answer) — do not keep UI waiting.
+                event["settled"] = True
+            yield event
+            pending_checkpoint = None
 
         if tools_fallback:
             reason = turn.get("tools_fallback_reason") or "provider rejected tools schema"
@@ -457,6 +549,9 @@ async def run_agent_loop(
             }
             working.append(assistant_msg)
 
+            gate_returned_this_batch = False
+            batch_tool_count = 0
+
             for tc in tool_calls:
                 if cancel_event is not None and cancel_event.is_set():
                     yield {"type": "error", "code": "TURN_CANCELLED", "message": "已停止"}
@@ -477,7 +572,7 @@ async def run_agent_loop(
                     write_gate_seen = True
                     if not parsed.get("patch"):
                         result = json.dumps(
-                            {"status": "failed", "error": "propose_edit missing patch payload"},
+                            {"status": "failed", "error": "propose_edit/propose_delete missing patch payload"},
                             ensure_ascii=False,
                         )
                     else:
@@ -541,6 +636,86 @@ async def run_agent_loop(
                     )
                 ) or name in _GATE_TOOL_NAMES
 
+                # Stop when the turn was cancelled.
+                if (
+                    (cancel_event is not None and cancel_event.is_set())
+                    or status in _GATE_STOP_STATUSES
+                ):
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "content": result,
+                        "tool_call_id": tc["id"],
+                    }
+                    yield {"type": "error", "code": "TURN_CANCELLED", "message": "已停止"}
+                    return
+
+                kind = gate_kind or (
+                    _gate_kind_from_tool_name(name) if name in _GATE_TOOL_NAMES else "patch"
+                )
+                is_gate_outcome = gate_handled or (
+                    name in _GATE_TOOL_NAMES
+                    and status
+                    and status not in _GATE_SUCCESS_STATUSES
+                    and status not in _GATE_STOP_STATUSES
+                )
+
+                # User Reject / partial apply: end this turn with a clear template.
+                if is_gate_outcome and status in _GATE_END_STATUSES:
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "content": result,
+                        "tool_call_id": tc["id"],
+                    }
+                    msg = _gate_user_message(kind, parsed_result or {"status": status})
+                    yield {"type": "token", "content": msg}
+                    yield {"type": "done"}
+                    return
+
+                # timeout / failed: one soft continue, then end and tell the user.
+                if is_gate_outcome and status in _GATE_RETRY_STATUSES:
+                    if gate_retry_used:
+                        yield {
+                            "type": "tool_result",
+                            "name": name,
+                            "content": result,
+                            "tool_call_id": tc["id"],
+                        }
+                        msg = _gate_user_message(
+                            kind,
+                            parsed_result or {"status": status},
+                            after_retry=True,
+                        )
+                        yield {"type": "token", "content": msg}
+                        yield {"type": "done"}
+                        return
+
+                    result = _enrich_gate_result_for_continue(
+                        result,
+                        kind,
+                        parsed_result or {"status": status},
+                        goal=turn_goal,
+                    )
+                    gate_retry_used = True
+                    gate_returned_this_batch = True
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "content": result,
+                        "tool_call_id": tc["id"],
+                        "loop_continue": True,
+                    }
+                    working.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": slim_tool_result(name, result),
+                        }
+                    )
+                    batch_tool_count += 1
+                    continue
+
                 yield {
                     "type": "tool_result",
                     "name": name,
@@ -548,40 +723,38 @@ async def run_agent_loop(
                     "tool_call_id": tc["id"],
                 }
 
-                # Stop: never let the model write a free-form closing essay.
-                if (
-                    (cancel_event is not None and cancel_event.is_set())
-                    or status in _GATE_STOP_STATUSES
-                ):
-                    yield {"type": "error", "code": "TURN_CANCELLED", "message": "已停止"}
-                    return
-
-                # Reject / timeout / fail after an approval gate: fixed template only.
-                if gate_handled and status in _GATE_TEMPLATE_STATUSES:
-                    msg = _gate_user_message(gate_kind or "patch", parsed_result or {})
-                    yield {"type": "token", "content": msg}
-                    yield {"type": "done"}
-                    return
-
-                # Safety net: approval tools that did not succeed must not continue the LLM.
-                if (
-                    name in _GATE_TOOL_NAMES
-                    and status
-                    and status not in _GATE_SUCCESS_STATUSES
-                    and status not in _GATE_STOP_STATUSES
-                ):
-                    msg = _gate_user_message(gate_kind or _gate_kind_from_tool_name(name), parsed_result or {"status": status})
-                    yield {"type": "token", "content": msg}
-                    yield {"type": "done"}
-                    return
-
                 working.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": result,
+                        "content": slim_tool_result(name, result),
                     }
                 )
+                batch_tool_count += 1
+                if gate_handled and status in _GATE_SUCCESS_STATUSES:
+                    gate_returned_this_batch = True
+
+            tools_since_checkpoint += batch_tool_count
+            checkpoint_reason = should_checkpoint(
+                tools_since_checkpoint,
+                gate_returned_this_batch,
+                checkpoint_every_n,
+            )
+            if checkpoint_reason:
+                checkpoint_msg = format_checkpoint_user_message(turn_goal)
+                working.append({"role": "user", "content": checkpoint_msg})
+                pending_checkpoint = {
+                    "goal": turn_goal,
+                    "tools_since_last": tools_since_checkpoint,
+                    "reason": checkpoint_reason,
+                }
+                yield {
+                    "type": "progress_checkpoint",
+                    "goal": turn_goal,
+                    "tools_since_last": tools_since_checkpoint,
+                    "reason": checkpoint_reason,
+                }
+                tools_since_checkpoint = 0
             continue
 
         if tools_fallback:
@@ -609,8 +782,48 @@ async def run_agent_loop(
         yield {"type": "done"}
         return
 
+    # Soft land: one final answer without tools so the user still gets a result.
+    goal_line = f"本轮目标：{turn_goal}。" if turn_goal else ""
+    working.append(
+        {
+            "role": "user",
+            "content": (
+                f"工具调用已达上限（{max_tool_iters} 轮）。{goal_line}"
+                "请基于以上已有工具结果，直接对照目标给出当前结论、已完成事项与未完成事项；"
+                "不要再调用任何工具。"
+            ),
+        }
+    )
+    try:
+        turn = await race_with_cancel(
+            provider.chat_complete(working, tools=None, model=model),
+            cancel_event,
+        )
+    except TurnCancelled:
+        yield {"type": "error", "code": "TURN_CANCELLED", "message": "已停止"}
+        return
+    except Exception as e:
+        logger.exception("soft-land chat_complete failed after tool loop limit")
+        yield {
+            "type": "error",
+            "code": "TOOL_LOOP_LIMIT",
+            "message": f"工具调用超过 {max_tool_iters} 轮，已中止（总结失败：{e}）",
+        }
+        return
+
+    content = (turn.get("content") or "").strip()
+    if content:
+        note = f"\n\n⚠️ 工具调用已达上限（{max_tool_iters} 轮），以上为基于已有结果的总结。"
+        if turn_goal:
+            note += f"\n目标：{turn_goal}"
+        yield {"type": "token", "content": content + note}
+        yield {"type": "done"}
+        return
+
     yield {
         "type": "error",
         "code": "TOOL_LOOP_LIMIT",
-        "message": f"工具调用超过 {MAX_TOOL_ITERS} 轮，已中止",
+        "message": f"工具调用超过 {max_tool_iters} 轮，已中止",
     }
+
+
