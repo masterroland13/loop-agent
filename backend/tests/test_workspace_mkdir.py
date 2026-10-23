@@ -95,3 +95,15 @@ def test_existing_directory_is_returned_again(tmp_path) -> None:
         create_browse_directory(str(parent), "notes/other")
     assert blocked.value.code == "INVALID_NAME"
     assert not (parent / "other").exists()
+
+
+def test_rejects_relative_parent(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(WorkspaceError) as dotted:
+        create_browse_directory(".", "notes")
+    assert dotted.value.code == "INVALID_PATH"
+    assert not (tmp_path / "notes").exists()
+    with pytest.raises(WorkspaceError) as blank:
+        create_browse_directory("   ", "notes")
+    assert blank.value.code == "INVALID_PATH"
+    assert not (tmp_path / "notes").exists()

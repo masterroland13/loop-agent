@@ -5,7 +5,9 @@
 | 脚本 | 作用 |
 |------|------|
 | `start-dev.sh` | 启动后端（8000）；提示如何开前端 |
-| `loop shell` | 打开桌面窗口；关窗停掉它自己拉起的后端和界面 |
+| `loop install` | 把界面、窗口程序和后端虚拟环境放进 `~/.local/lib/loop-agent`，写入 `~/.local/bin/loop` 和桌面启动项 |
+| `loop shell` | 从安装目录打开桌面窗口；关窗停掉它拉起的后端 |
+| `loop uninstall` | 删除安装目录、命令行入口和桌面启动项；用户数据和工作区留下 |
 | `restart-loop.sh` | 重启前后端 |
 | `rebuild-preview.sh` | 构建前端并重启 vite preview |
 | `preview-server.mjs` | Windows 侧预览静态 `dist/` |

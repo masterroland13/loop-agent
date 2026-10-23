@@ -72,6 +72,20 @@ def test_save_writes_env_and_updates_settings(fake_env) -> None:
     assert active["api_key_configured"] is True
 
 
+def test_shell_save_updates_profile_without_writing_env(fake_env, monkeypatch, tmp_path) -> None:
+    stray = tmp_path / "install" / ".env"
+    monkeypatch.setenv("LOOP_SHELL", "1")
+    monkeypatch.setattr(llm_config, "_env_path", lambda: stray)
+    saved = save_llm_config({"api_key": "sk-shell-only", "default_model": "deepseek-flash"})
+    assert not stray.exists()
+    original = fake_env.read_text(encoding="utf-8")
+    assert "sk-shell-only" not in original
+    assert "LLM_API_KEY=old-key" in original
+    assert saved["default_model"] == "deepseek-flash"
+    assert saved["api_key_configured"] is True
+    assert "sk-shell-only" not in str(saved)
+
+
 def test_partial_update_keeps_other_lines(fake_env) -> None:
     save_llm_config({"default_model": "deepseek-v4-pro"})
     text = fake_env.read_text(encoding="utf-8")

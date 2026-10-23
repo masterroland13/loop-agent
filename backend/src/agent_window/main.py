@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent_window.api import router
+from agent_window.host.frontend import mount_shell_frontend
 from agent_window.models import init_db
 from agent_window.services.memory import load_persisted_memories
 from agent_window.services.patches import load_persisted_patches
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+mount_shell_frontend(app)
 
 
 @app.on_event("startup")

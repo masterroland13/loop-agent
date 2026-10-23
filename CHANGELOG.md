@@ -9,8 +9,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 ## [Unreleased]
 
 ### Added
-- **首次向导：** 工作区还没绑定时，窗口先让用户填一个模型（Base URL / API Key / Model ID，可从带地址的预置填入），再选已有文件夹或在当前位置新建。新建只建子文件夹，点「使用此文件夹」才绑定。已绑定工作区的开发服务不会出现这一步。`loop shell` 拉起的后端不读 `backend/.env`。
-- **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端和界面。关窗后这两个进程停掉。这份数据目录不带工作区，也不动开发用的 `backend/data`。窗口端口是 8765 / 8766，避开正在跑的 8000 / 5173。
+- **首次向导：** 工作区还没绑定时，窗口先让用户填一个模型（Base URL / API Key / Model ID，可从带地址的预置填入），再选已有文件夹或在当前位置新建。新建只建子文件夹，点「使用此文件夹」才绑定。只有一份空档案时会补全并激活它。新建接口拒绝相对父路径，避免落到进程当前目录。已绑定工作区的开发服务不会出现这一步。`loop shell` 拉起的后端不读 `backend/.env`。
+- **安装目录：** `loop install` 把构建好的界面、窗口程序和一份后端虚拟环境放进 `~/.local/lib/loop-agent`，写入 `~/.local/bin/loop`（走安装目录里的解释器），并放一份桌面启动项（绝对路径开窗，不依赖当前 PATH）。`loop uninstall` 只删这些程序文件，用户数据和工作区留下。已经装好的 `loop` 再执行 `install` 会停下来，要从仓库跑。`loop shell` 用这份环境开窗，页面由同一个后端在 8765 托管，不再从仓库源码导入。用户数据仍在 `~/.local/share/loop-agent`。开发用的 8000 / 5173 不动。桌面进程保存模型时不把密钥写进 `.env`。
+- **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端。关窗后这个进程停掉。8765 已被占用时不开第二份，避免接到别人的后端。`/health` 必须是 200 才算起来。父进程收到 SIGTERM / SIGHUP 会停掉子进程。这份数据目录不带工作区，也不动开发用的 `backend/data`。端口是 8765，避开正在跑的 8000 / 5173。
 - **会话级模型档案：** 新会话抄当前档案；顶栏选择写入当前会话（`profile_id` + `model_id`）；并行会话各用各的网关 client。设置可从 Moonshot、DeepSeek、OpenRouter 等 OpenAI 兼容预置开卡。密钥存放说明见 [`docs/research/api-key-storage.md`](docs/research/api-key-storage.md)。§4 手测已通过。
 - **界面语言 zh/en：** Settings「偏好」切换；侧栏/右键/设置/Files/审批卡/搜索/工作区/模型选择等壳层文案走 `src/i18n`；Agent 仍跟用户提问语言；`zh`/`en` 词条对齐（416）。
 - **Files Word（.docx）：** mammoth/htmldocx 读写；预览 + HTML 源码编辑；调研报告 `docs/research/files-editor-office-scope.md`（Excel/PPT 暂缓）。
@@ -53,7 +54,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - LLM 错误提示分类：区分连接超时 / 地址不可达 / SSL 证书 / 401 / 403 / 404 / 429 / 500 / 502/503 / 模型不可用 / 响应超时 / 上下文超限
 
 ### Changed
-- **用户数据目录：** 没设 `APP_DATA_DIR` 时，会话和档案放到 `~/.local/share/loop-agent`，不再落到进程当前目录。开发在 `.env` 里写 `APP_DATA_DIR=./data` 仍用 `backend/data`。新目录不绑定工作区，也不自动搬旧数据。
+- **用户数据目录：** 没设 `APP_DATA_DIR` 时，会话和档案放到 `~/.local/share/loop-agent`，不再落到进程当前目录。开发在 `.env` 里写 `APP_DATA_DIR=./data` 仍用 `backend/data`。新目录不绑定工作区，也不自动搬旧数据。空白值回退到用户目录；以 `~` 开头的路径会展开成家目录。
 - **仓库杂物：** 清掉根目录临时脚本、重启报告、pytest 输出和已入库的 `__pycache__`。重启报告改写到 `logs/`。
 - **产品名：** 界面、关于页、文档和 CLI 从 Hal Agent / `hal` 改为 Loop Agent / `loop`。配置目录改为 `~/.config/loop-agent`，仍会读取旧的 `hal-agent`。浏览器里 `hal.recentModels` 和 `hal:files-auto-save` 会迁到 `loop.*`。Python 包名仍是 `agent_window`。
 - **模型服务文案：** 中文界面下，档案卡的「当前 / 设为当前 / 测试 / 删除」、说明和密钥占位改为中文。说明不再加句号。Temperature、Base URL、API Key、Model ID、厂商名和模型 id 仍保留英文。

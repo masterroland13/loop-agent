@@ -228,10 +228,21 @@ def _binary_name(token: str) -> str:
     return Path(token).name
 
 
-def resolve_loop_python() -> str:
-    """Prefer the Loop Agent backend venv interpreter; fall back to python3 on PATH."""
-    # …/backend/src/agent_window/services/shell.py → backend/
-    backend_root = Path(__file__).resolve().parents[3]
+def python_for_package(package_file: Path) -> str:
+    """Interpreter that owns this package: the install venv, else the checkout venv."""
+    resolved = package_file.resolve()
+    for parent in resolved.parents:
+        if parent.name != "site-packages":
+            continue
+        venv_root = parent.parents[2]
+        for candidate in (
+            venv_root / "bin" / "python",
+            venv_root / "Scripts" / "python.exe",
+        ):
+            if candidate.is_file():
+                return str(candidate)
+        break
+    backend_root = resolved.parents[3]
     for candidate in (
         backend_root / ".venv" / "bin" / "python",
         backend_root / ".venv" / "Scripts" / "python.exe",
@@ -239,6 +250,11 @@ def resolve_loop_python() -> str:
         if candidate.is_file():
             return str(candidate)
     return "python3"
+
+
+def resolve_loop_python() -> str:
+    """Prefer the venv that contains this package; fall back to python3 on PATH."""
+    return python_for_package(Path(__file__))
 
 
 def normalize_shell_argv(argv: List[str]) -> List[str]:

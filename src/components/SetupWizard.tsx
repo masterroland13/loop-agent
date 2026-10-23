@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   browseWorkspace,
+  activateModelProfile,
   createModelProfile,
   createWorkspaceFolder,
   fetchModelProfiles,
@@ -129,6 +130,7 @@ export function SetupWizard({ onReady, onModelSaved }: SetupWizardProps) {
       let profileId = emptyProfileId
       if (profileId) {
         await updateModelProfile(profileId, body)
+        await activateModelProfile(profileId)
       } else {
         const created = await createModelProfile({ ...body, activate: true })
         profileId = created.id
@@ -184,7 +186,11 @@ export function SetupWizard({ onReady, onModelSaved }: SetupWizardProps) {
         <div className="border-b border-[var(--border-subtle)] px-5 py-4">
           <h2 className="text-base font-semibold text-[var(--text-h)]">{t('setup.title')}</h2>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            {step === 'folder' ? t('setup.folderHint') : t('setup.modelHint')}
+            {step === 'folder'
+              ? t('setup.folderHint')
+              : step === 'model'
+                ? t('setup.modelHint')
+                : t('setup.preparing')}
           </p>
         </div>
 
@@ -232,7 +238,8 @@ export function SetupWizard({ onReady, onModelSaved }: SetupWizardProps) {
                   {parent && (
                     <button
                       type="button"
-                      className="hover:text-[var(--text-h)]"
+                      disabled={busy}
+                      className="hover:text-[var(--text-h)] disabled:opacity-40"
                       onClick={() => loadBrowse(parent)}
                     >
                       {t('workspace.parent')}
@@ -240,7 +247,8 @@ export function SetupWizard({ onReady, onModelSaved }: SetupWizardProps) {
                   )}
                   <button
                     type="button"
-                    className="hover:text-[var(--text-h)]"
+                    disabled={busy}
+                    className="hover:text-[var(--text-h)] disabled:opacity-40"
                     onClick={() => loadBrowse(browsePath)}
                   >
                     {t('workspace.refresh')}
@@ -257,7 +265,8 @@ export function SetupWizard({ onReady, onModelSaved }: SetupWizardProps) {
                     <button
                       key={dir.path}
                       type="button"
-                      className="block w-full truncate border-b border-[var(--border-subtle)] px-3 py-2 text-left text-sm text-[var(--text-h)] last:border-b-0 hover:bg-[var(--surface-hover)]"
+                      disabled={busy}
+                      className="block w-full truncate border-b border-[var(--border-subtle)] px-3 py-2 text-left text-sm text-[var(--text-h)] last:border-b-0 hover:bg-[var(--surface-hover)] disabled:opacity-40"
                       onClick={() => loadBrowse(dir.path)}
                     >
                       {dir.name}/

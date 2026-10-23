@@ -31,13 +31,13 @@ window → coding → agent-core → ai
 
 | 目录 | 规则 |
 |------|------|
-| 安装目录 | 壳的事。`agent/` 环不拼这条路径 |
+| 安装目录 | `~/.local/lib/loop-agent`。界面、窗口程序、后端虚拟环境。命令行入口 `~/.local/bin/loop`。桌面启动项 `~/.local/share/applications/loop-agent.desktop`。`loop uninstall` 只删这里。`agent/` 环不拼这条路径 |
 | 用户数据目录 | `Settings.app_data_dir`。`APP_DATA_DIR` 优先；否则 `~/.local/share/loop-agent`。不是进程当前目录 |
 | 工作区 | `workspace.json` 记在用户数据目录里。空则 coding 沙箱没有根 |
 
 CLI 的 `~/.config/loop-agent` 不放入上表。开发用 `APP_DATA_DIR=./data` 指向 `backend/data`。
 
-`loop shell` 是桌面宿主，和浏览器、CLI 并列，不进 `agent/` 环。它开窗前把 `APP_DATA_DIR` 设成用户数据目录并拉起后端和界面，关窗后停掉这两个进程。窗口程序源码在 `shell/loop-window.c`。用户数据目录里还没有工作区时，窗口先走首次向导：填一个模型，再选或新建文件夹。新建只在当前浏览目录下建子文件夹，绑定仍走原来的工作区接口。桌面进程不读 `backend/.env`。
+`loop shell` 是桌面宿主，和浏览器、CLI 并列，不进 `agent/` 环。它从安装目录开窗，用那里的虚拟环境拉起后端，把 `APP_DATA_DIR` 设成用户数据目录，页面由这个后端托管，关窗后停掉。桌面启动项的 Exec 写绝对路径，不依赖当前 PATH。窗口程序源码在 `shell/loop-window.c`，装好的二进制在安装目录。用户数据目录里还没有工作区时，窗口先走首次向导：填一个模型，再选或新建文件夹。新建只在当前浏览目录下建子文件夹，绑定仍走原来的工作区接口。桌面进程不读 `backend/.env`。
 
 ## A0 验收（import）
 

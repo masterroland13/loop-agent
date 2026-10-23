@@ -625,13 +625,46 @@ def build_parser() -> argparse.ArgumentParser:
     add_gate_flags(p_reject)
     p_reject.set_defaults(func=cmd_reject)
 
+    p_install = sub.add_parser(
+        "install",
+        help="Copy the app into the install directory and put loop on PATH",
+    )
+    p_install.set_defaults(func=cmd_install)
+
     p_shell = sub.add_parser(
         "shell",
-        help="Open the Loop Agent window; stop the runtime when the window closes",
+        help="Open the Loop Agent window from the install directory",
     )
     p_shell.set_defaults(func=cmd_shell)
 
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove the installed app; keep user data and workspace",
+    )
+    p_uninstall.set_defaults(func=cmd_uninstall)
+
     return parser
+
+
+def cmd_install(_client: RuntimeClient, _args: argparse.Namespace) -> int:
+    from agent_window.host.session import (
+        ShellError,
+        install_shell_assets,
+        repo_root,
+        shell_applications_dir,
+        shell_bin_dir,
+        shell_install_dir,
+    )
+
+    try:
+        dest = install_shell_assets(repo_root(), shell_install_dir())
+    except (ShellError, OSError) as exc:
+        _eprint(str(exc))
+        return 1
+    print(dest)
+    print(shell_bin_dir() / "loop")
+    print(shell_applications_dir() / "loop-agent.desktop")
+    return 0
 
 
 def cmd_shell(_client: RuntimeClient, _args: argparse.Namespace) -> int:
@@ -642,6 +675,34 @@ def cmd_shell(_client: RuntimeClient, _args: argparse.Namespace) -> int:
     except (ShellError, OSError) as exc:
         _eprint(str(exc))
         return 1
+
+
+def cmd_uninstall(_client: RuntimeClient, _args: argparse.Namespace) -> int:
+    from agent_window.host.session import (
+        ShellError,
+        shell_applications_dir,
+        shell_bin_dir,
+        shell_data_dir,
+        shell_install_dir,
+        uninstall_shell_assets,
+    )
+
+    try:
+        removed = uninstall_shell_assets(
+            shell_install_dir(),
+            shell_bin_dir(),
+            shell_applications_dir(),
+            shell_data_dir(),
+        )
+    except (ShellError, OSError) as exc:
+        _eprint(str(exc))
+        return 1
+    if not removed:
+        print("没有可卸载的程序文件。")
+        return 0
+    for path in removed:
+        print(path)
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:

@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     def _blank_app_data_dir(cls, value: object) -> object:
         if value is None or (isinstance(value, str) and not value.strip()):
             return default_user_data_dir()
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned.startswith("~"):
+                return str(Path(cleaned).expanduser())
+            return cleaned
         return value
 
     class Config:

@@ -25,6 +25,37 @@ def test_unset_app_data_dir_is_user_dir_not_cwd(monkeypatch: pytest.MonkeyPatch,
     assert Path(got.app_data_dir) != (cwd / "data")
 
 
+def test_blank_app_data_dir_falls_back_to_user_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("APP_DATA_DIR", "   ")
+    got = Settings(_env_file=None)
+    user_dir = tmp_path / ".local" / "share" / "loop-agent"
+    assert got.app_data_dir == str(user_dir)
+    assert got.app_data_dir.strip() != ""
+    assert "./data" not in got.app_data_dir
+
+
+def test_tilde_app_data_dir_expands_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("APP_DATA_DIR", "~/custom-data")
+    got = Settings(_env_file=None)
+    assert got.app_data_dir == str(home / "custom-data")
+    assert "~" not in got.app_data_dir
+    assert got.app_data_dir != "~/custom-data"
+
+
+def test_relative_app_data_dir_stays_relative(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("APP_DATA_DIR", "./data")
+    got = Settings(_env_file=None)
+    assert got.app_data_dir == "./data"
+    assert got.app_data_dir != str(tmp_path / ".local" / "share" / "loop-agent")
+
+
 def test_app_data_dir_env_overrides_user_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     custom = tmp_path / "custom-data"

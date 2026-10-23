@@ -788,6 +788,7 @@ def grep_search(
 def create_browse_directory(parent: str, name: str) -> Path:
     """Create a folder under a This PC path. Does not bind it as the workspace."""
     raw_name = (name or "").strip()
+    raw_parent = (parent or "").strip()
     if (
         not raw_name
         or raw_name in {".", ".."}
@@ -795,7 +796,9 @@ def create_browse_directory(parent: str, name: str) -> Path:
         or "\\" in raw_name
     ):
         raise WorkspaceError("invalid folder name", "INVALID_NAME")
-    parent_path = Path(parent).expanduser().resolve()
+    if not raw_parent or raw_parent in {".", ".."}:
+        raise WorkspaceError("invalid parent", "INVALID_PATH")
+    parent_path = Path(raw_parent).expanduser().resolve()
     if not parent_path.is_dir():
         raise WorkspaceError(f"not a directory: {parent_path}", "NOT_A_DIR")
     dest = (parent_path / raw_name).resolve()

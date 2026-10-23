@@ -117,7 +117,7 @@ def save_llm_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     if globals_kwargs:
         registry.update_globals(**globals_kwargs)
 
-    if env_updates:
+    if env_updates and os.environ.get("LOOP_SHELL") != "1":
         _write_env(_env_path(), env_updates)
 
     return public_llm_config()
