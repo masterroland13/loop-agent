@@ -156,6 +156,23 @@
   --unread-dot-ring: #f7f5f0;
 }
 
+button,
+select,
+summary,
+[role="button"] {
+  cursor: pointer;
+}
+
+input,
+textarea {
+  cursor: text;
+}
+
+[data-loop-hover="1"] {
+  outline: 2px solid var(--input-focus);
+  outline-offset: 1px;
+}
+
 :root {
   --radius: 0.75rem;
   --radius-sm: 0.5rem;

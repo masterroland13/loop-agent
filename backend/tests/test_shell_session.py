@@ -30,11 +30,25 @@ from agent_window.services.shell import python_for_package
 
 def test_backend_env_overrides_dev_data_dir(tmp_path: Path) -> None:
     data = tmp_path / "user-data"
-    env = backend_env({"APP_DATA_DIR": "./data", "PATH": "/usr/bin"}, data)
+    env = backend_env(
+        {
+            "APP_DATA_DIR": "./data",
+            "PATH": "/usr/bin",
+            "WAYLAND_DISPLAY": "wayland-0",
+        },
+        data,
+    )
     assert env["APP_DATA_DIR"] == str(data)
     assert env["APP_DATA_DIR"] != "./data"
     assert env["PATH"] == "/usr/bin"
     assert env["LOOP_SHELL"] == "1"
+    assert env["WEBKIT_DISABLE_DMABUF_RENDERER"] == "1"
+    assert env["WEBKIT_DISABLE_COMPOSITING_MODE"] == "1"
+    assert env["WEBKIT_DISABLE_SANDBOX"] == "1"
+    assert env["GDK_BACKEND"] == "x11"
+    assert env["GDK_CORE_DEVICE_EVENTS"] == "1"
+    assert "WAYLAND_DISPLAY" not in env
+    assert "LIBGL_ALWAYS_SOFTWARE" not in env
 
 
 def test_shell_backend_ignores_dotenv_secrets(tmp_path: Path) -> None:

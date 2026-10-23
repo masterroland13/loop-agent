@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -37,5 +37,10 @@ def mount_shell_frontend(app: FastAPI, static_dir: Path | None = None) -> bool:
     @app.get("/")
     def shell_index() -> FileResponse:
         return FileResponse(index)
+
+    @app.post("/api/shell-boot")
+    async def shell_boot(request: Request) -> dict[str, bool]:
+        Path("/tmp/loop-shell-boot.log").write_bytes((await request.body())[:4000])
+        return {"ok": True}
 
     return True

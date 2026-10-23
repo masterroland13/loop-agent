@@ -9,7 +9,7 @@
 |------|-----|
 | **最后更新** | 2026-10-23 |
 | **产品名** | Loop Agent |
-| **当前焦点** | `loop uninstall` 只删程序文件；已安装的 `loop` 不能再当仓库来 install |
+| **当前焦点** | 安装窗口首次向导与对话已手测通过；WebKitGTK 2.38 安装页可开窗 |
 | **架构阶段** | **A0–A4 完成** |
 
 ---
@@ -29,6 +29,7 @@
 
 | 日期 | 变更摘要 |
 |------|----------|
+| 2026-10-23 | **安装窗口手测：** 向导、模型、回复在 `loop shell` 里通过。打包页 fetch+eval；向导单独一页；窗口走 X11 |
 | 2026-10-23 | **卸载：** `loop uninstall` 删除安装目录、命令行入口和桌面启动项，留下用户数据和工作区 |
 | 2026-10-23 | **桌面启动项：** `loop install` 写入 `~/.local/share/applications/loop-agent.desktop`，Exec 是 `loop shell` 的绝对路径 |
 | 2026-10-23 | **PATH 入口：** `loop install` 写入 `~/.local/bin/loop`，解释器是安装目录里的 Python |

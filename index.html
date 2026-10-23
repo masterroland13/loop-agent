@@ -7,7 +7,30 @@
     <title>Loop Agent</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <p id="boot" style="margin:0;padding:24px;color:#f4f4f4;background:#1b1b1b;font:16px/1.5 sans-serif;">
+        正在打开 Loop Agent…
+      </p>
+    </div>
+    <script>
+      window.__loopPointer = function (x, y) {
+        var prev = window.__loopHoverEl
+        var el = (x < 0 || y < 0) ? null : document.elementFromPoint(x, y)
+        if (el === prev) return
+        if (prev) {
+          prev.classList.remove('loop-hover')
+          prev.removeAttribute('data-loop-hover')
+        }
+        window.__loopHoverEl = el
+        if (!el) {
+          return
+        }
+        el.classList.add('loop-hover')
+        el.setAttribute('data-loop-hover', '1')
+      }
+      var boot = document.getElementById('boot')
+      if (boot) boot.textContent = '页面脚本已运行，正在加载界面…'
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

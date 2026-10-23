@@ -197,6 +197,15 @@ def backend_env(
     env.pop("PYTHONPATH", None)
     # Child imports Settings before reading this; skip backend/.env (dev keys).
     env["LOOP_SHELL"] = "1"
+    # WSLg WebKit otherwise composites a black window and never paints the UI.
+    env["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
+    env["WEBKIT_DISABLE_COMPOSITING_MODE"] = "1"
+    env["WEBKIT_DISABLE_SANDBOX"] = "1"
+    env["GDK_BACKEND"] = "x11"
+    env["GDK_CORE_DEVICE_EVENTS"] = "1"
+    # WSLg sets WAYLAND_DISPLAY; WebKit then uses AcceleratedBackingStoreWayland
+    # and the cursor is drawn on a layer the pointer cannot sit on.
+    env.pop("WAYLAND_DISPLAY", None)
     if static_dir is not None:
         env["LOOP_STATIC_DIR"] = str(static_dir)
     return env
@@ -510,7 +519,12 @@ def run_shell() -> int:
             proc=backend,
         ):
             raise ShellError("界面没有起来。")
-        window = start_process(window_argv, env=env, cwd=install)
+        window = start_process(
+            window_argv,
+            env=env,
+            cwd=install,
+            log_path=log_dir / "loop-shell-window.log",
+        )
         code = window.wait()
         return int(code or 0)
     finally:

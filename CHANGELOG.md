@@ -11,7 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 ### Added
 - **首次向导：** 工作区还没绑定时，窗口先让用户填一个模型（Base URL / API Key / Model ID，可从带地址的预置填入），再选已有文件夹或在当前位置新建。新建只建子文件夹，点「使用此文件夹」才绑定。只有一份空档案时会补全并激活它。新建接口拒绝相对父路径，避免落到进程当前目录。已绑定工作区的开发服务不会出现这一步。`loop shell` 拉起的后端不读 `backend/.env`。
 - **安装目录：** `loop install` 把构建好的界面、窗口程序和一份后端虚拟环境放进 `~/.local/lib/loop-agent`，写入 `~/.local/bin/loop`（走安装目录里的解释器），并放一份桌面启动项（绝对路径开窗，不依赖当前 PATH）。`loop uninstall` 只删这些程序文件，用户数据和工作区留下。已经装好的 `loop` 再执行 `install` 会停下来，要从仓库跑。`loop shell` 用这份环境开窗，页面由同一个后端在 8765 托管，不再从仓库源码导入。用户数据仍在 `~/.local/share/loop-agent`。开发用的 8000 / 5173 不动。桌面进程保存模型时不把密钥写进 `.env`。
-- **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端。关窗后这个进程停掉。8765 已被占用时不开第二份，避免接到别人的后端。`/health` 必须是 200 才算起来。父进程收到 SIGTERM / SIGHUP 会停掉子进程。这份数据目录不带工作区，也不动开发用的 `backend/data`。端口是 8765，避开正在跑的 8000 / 5173。
+- **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端。关窗后这个进程停掉。8765 已被占用时不开第二份，避免接到别人的后端。`/health` 必须是 200 才算起来。父进程收到 SIGTERM / SIGHUP 会停掉子进程。WSLg 下关掉 WebKit 硬件加速，避免窗口全黑；网页铺满窗口。首次向导单独一页，不再盖在主界面上。窗口强制走 X11，避免 WSLg 的 Wayland 加速层把光标盖住。安装页用 fetch+eval 装入界面脚本，出错会写在页面上。打包时去掉 Markdown 邮箱识别里的 lookbehind，WebKitGTK 2.38 才能解析。这份数据目录不带工作区，也不动开发用的 `backend/data`。端口是 8765，避开正在跑的 8000 / 5173。
 - **会话级模型档案：** 新会话抄当前档案；顶栏选择写入当前会话（`profile_id` + `model_id`）；并行会话各用各的网关 client。设置可从 Moonshot、DeepSeek、OpenRouter 等 OpenAI 兼容预置开卡。密钥存放说明见 [`docs/research/api-key-storage.md`](docs/research/api-key-storage.md)。§4 手测已通过。
 - **界面语言 zh/en：** Settings「偏好」切换；侧栏/右键/设置/Files/审批卡/搜索/工作区/模型选择等壳层文案走 `src/i18n`；Agent 仍跟用户提问语言；`zh`/`en` 词条对齐（416）。
 - **Files Word（.docx）：** mammoth/htmldocx 读写；预览 + HTML 源码编辑；调研报告 `docs/research/files-editor-office-scope.md`（Excel/PPT 暂缓）。

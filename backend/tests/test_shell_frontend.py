@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -39,6 +41,10 @@ def test_shell_serves_index_and_keeps_api(tmp_path) -> None:
     assert api.json()["root"] is None
     missing = client.get("/assets/nope.js")
     assert missing.status_code == 404
+    report = client.post("/api/shell-boot", content=b"boot-error")
+    assert report.status_code == 200
+    assert report.json()["ok"] is True
+    assert Path("/tmp/loop-shell-boot.log").read_bytes() == b"boot-error"
 
 
 def test_dev_app_does_not_serve_the_shell_page() -> None:
