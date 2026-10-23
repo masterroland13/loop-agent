@@ -17,6 +17,12 @@ lerna-debug.log*
 .firecrawl/
 backend/data/
 backend/.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.aw-sandbox/
+*-restart-report.txt
+_pytest_out.txt
 
 # Editor
 .vscode/*

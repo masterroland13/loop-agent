@@ -7,8 +7,23 @@ export type ChatAttachment = {
   size?: number
   contentType?: string
   url?: string
+  /** Local object URL for image chip preview (revoke on remove). */
+  previewUrl?: string
   /** Local key for React lists before id exists */
   localKey: string
+}
+
+const IMAGE_NAME_RE = /\.(png|jpe?g|gif|webp|bmp)$/i
+
+export function isImageAttachment(att: {
+  contentType?: string | null
+  name?: string
+  filename?: string
+}): boolean {
+  const ctype = (att.contentType || '').toLowerCase()
+  if (ctype.startsWith('image/') && !ctype.includes('svg')) return true
+  const name = att.name || att.filename || ''
+  return IMAGE_NAME_RE.test(name)
 }
 
 export function draftContentForSend(userText: string): string {

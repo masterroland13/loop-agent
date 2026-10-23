@@ -35,7 +35,7 @@ def end_turn(session_id: str) -> None:
 
 
 def cancel_turn(session_id: str) -> bool:
-    """Signal cancel for an active turn and force-wake any pending approvals."""
+    """Signal cancel for an active turn and force-wake pending approvals for that session."""
     from agent_window.services.memory import cancel_pending_memories
     from agent_window.services.patches import cancel_pending_patches
     from agent_window.services.shell import cancel_pending_shells
@@ -43,8 +43,12 @@ def cancel_turn(session_id: str) -> bool:
     ev = _active.get(session_id)
     if ev:
         ev.set()
-    # Always clear pending gates so a missed cancel_event cannot leave the loop hung.
-    n = cancel_pending_patches() + cancel_pending_shells() + cancel_pending_memories()
+    # Only clear gates belonging to this session (Phase 3 — no cross-session wipe).
+    n = (
+        cancel_pending_patches(session_id)
+        + cancel_pending_shells(session_id)
+        + cancel_pending_memories(session_id)
+    )
     return ev is not None or n > 0
 
 

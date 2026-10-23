@@ -125,10 +125,10 @@ def test_partial_apply_already_decided(ws: Path) -> None:
 
 
 def test_gate_message_for_partial() -> None:
-    from agent_window.agent.loop import _GATE_END_STATUSES, _gate_user_message
+    from agent_window.agent.gate_policy import GATE_END_STATUSES, gate_user_message
 
-    assert "partial" in _GATE_END_STATUSES
-    msg = _gate_user_message("patch", {"status": "partial", "path": "x.py", "applied_hunks": [0, 2]})
+    assert "partial" in GATE_END_STATUSES
+    msg = gate_user_message("patch", {"status": "partial", "path": "x.py", "applied_hunks": [0, 2]})
     assert "部分应用" in msg
     assert "x.py" in msg
     assert "超时" not in msg

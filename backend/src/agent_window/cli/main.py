@@ -1,4 +1,4 @@
-"""Hal Agent CLI — headless runtime, same API as the web UI."""
+"""Loop Agent CLI — headless runtime, same API as the web UI."""
 
 from __future__ import annotations
 
@@ -147,14 +147,14 @@ def _print_status(payload: Dict[str, Any]) -> None:
     print("待审批（工作区全局）:")
     for p in patches:
         print(f"  [patch]  {p.get('id')}  path={p.get('path')}  status={p.get('status')}")
-        print(f"           hal approve --patch-id {p.get('id')}")
+        print(f"           loop approve --patch-id {p.get('id')}")
     for s in shells:
         print(f"  [shell]  {s.get('id')}  cmd={s.get('command')}  status={s.get('status')}")
-        print(f"           hal approve --shell-id {s.get('id')}")
+        print(f"           loop approve --shell-id {s.get('id')}")
     for m in memories:
         preview = _preview(str(m.get("preview") or m.get("content") or ""), 60)
         print(f"  [memory] {m.get('id')}  mode={m.get('mode')}  status={m.get('status')}  {preview}")
-        print(f"           hal approve --memory-id {m.get('id')}")
+        print(f"           loop approve --memory-id {m.get('id')}")
 
 
 def cmd_status(client: RuntimeClient, args: argparse.Namespace) -> int:
@@ -466,8 +466,8 @@ def cmd_ask(client: RuntimeClient, args: argparse.Namespace) -> int:
     except ApiError:
         return code
     if leftover["patches"] or leftover["shells"] or leftover["memories"]:
-        _eprint("仍有待审批，查看: hal status")
-        _eprint("批准: hal approve --patch-id|--shell-id|--memory-id <id>")
+        _eprint("仍有待审批，查看: loop status")
+        _eprint("批准: loop approve --patch-id|--shell-id|--memory-id <id>")
     return code
 
 
@@ -501,8 +501,8 @@ def cmd_run(client: RuntimeClient, args: argparse.Namespace) -> int:
     if not args.wait:
         try:
             if _has_pending(client):
-                _eprint("仍有待审批，查看: hal status")
-                _eprint("批准: hal approve --patch-id|--shell-id|--memory-id <id>")
+                _eprint("仍有待审批，查看: loop status")
+                _eprint("批准: loop approve --patch-id|--shell-id|--memory-id <id>")
         except ApiError:
             pass
         return 0
@@ -515,15 +515,15 @@ def cmd_run(client: RuntimeClient, args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="hal",
-        description="Hal Agent CLI — headless runtime, same API as the web UI",
+        prog="loop",
+        description="Loop Agent CLI — headless runtime, same API as the web UI",
     )
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE,
         help=(
             "Runtime base URL "
-            "(env AGENT_BASE_URL > ~/.config/hal-agent/config.json > default "
+            "(env AGENT_BASE_URL > ~/.config/loop-agent/config.json > default "
             f"{DEFAULT_BASE})"
         ),
     )

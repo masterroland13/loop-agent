@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
+import { useT } from '../i18n'
 import type { PendingShell } from '../types'
 
 interface ShellPanelProps {
@@ -7,6 +8,8 @@ interface ShellPanelProps {
   onReject: (id: string) => void
   onRetry?: (id: string) => void
   busyId?: string | null
+  /** Activity timeline focus — scroll + highlight matching card. */
+  focusId?: string | null
 }
 
 function isActionable(status: PendingShell['status']) {
@@ -19,11 +22,42 @@ function isActionable(status: PendingShell['status']) {
   )
 }
 
-export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: ShellPanelProps) {
+export function ShellPanel({
+  shells,
+  onApply,
+  onReject,
+  onRetry,
+  busyId,
+  focusId,
+}: ShellPanelProps) {
+  const t = useT()
   const cards = shells.filter((s) => s.status !== 'cancelled')
   const actionable = cards.filter((s) => isActionable(s.status))
   const done = cards.filter((s) => s.status === 'done')
   const [showDone, setShowDone] = useState(false)
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+
+  useLayoutEffect(() => {
+    if (!focusId) return
+    const shell = shells.find((s) => s.id === focusId && s.status !== 'cancelled')
+    if (!shell) return
+    if (shell.status === 'done') setShowDone(true)
+  }, [focusId, shells])
+
+  useEffect(() => {
+    if (!focusId) return
+    if (!shells.some((s) => s.id === focusId && s.status !== 'cancelled')) return
+    const timer = window.setTimeout(() => {
+      const el = document.getElementById(`gate-shell-${focusId}`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      setHighlightId(focusId)
+    }, 30)
+    const clear = window.setTimeout(() => setHighlightId(null), 2200)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(clear)
+    }
+  }, [focusId, showDone, shells])
 
   if (cards.length === 0) return null
 
@@ -35,6 +69,7 @@ export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: Shell
             key={shell.id}
             shell={shell}
             busy={busyId === shell.id || shell.status === 'running'}
+            highlighted={highlightId === shell.id}
             onApply={() => onApply(shell.id)}
             onReject={() => onReject(shell.id)}
             onRetry={onRetry ? () => onRetry(shell.id) : undefined}
@@ -49,10 +84,10 @@ export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: Shell
             >
               <span className="text-[var(--text-dim)]">{showDone ? '▾' : '▸'}</span>
               <span>
-                已完成 {done.length} 条命令
+                {t('gate.shellDoneCount', { n: done.length })}
                 {!showDone && (
                   <span className="ml-1.5 text-[var(--text-dim)]">
-                    （点击展开，避免占满屏幕）
+                    {t('gate.shellExpandHint')}
                   </span>
                 )}
               </span>
@@ -64,6 +99,7 @@ export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: Shell
                     key={shell.id}
                     shell={shell}
                     busy={false}
+                    highlighted={highlightId === shell.id}
                     onApply={() => onApply(shell.id)}
                     onReject={() => onReject(shell.id)}
                     onRetry={onRetry ? () => onRetry(shell.id) : undefined}
@@ -81,16 +117,19 @@ export function ShellPanel({ shells, onApply, onReject, onRetry, busyId }: Shell
 function ShellCard({
   shell,
   busy,
+  highlighted,
   onApply,
   onReject,
   onRetry,
 }: {
   shell: PendingShell
   busy: boolean
+  highlighted?: boolean
   onApply: () => void
   onReject: () => void
   onRetry?: () => void
 }) {
+  const t = useT()
   const pending = shell.status === 'pending'
   const rejected = shell.status === 'rejected'
   const failed = shell.status === 'failed' || shell.status === 'timeout'
@@ -104,26 +143,33 @@ function ShellCard({
     setExpanded(wantsOpen)
   }, [shell.status, wantsOpen])
 
+  useEffect(() => {
+    if (highlighted) setExpanded(true)
+  }, [highlighted])
+
   const output = [shell.stdout, shell.stderr].filter(Boolean).join('\n').slice(0, 4000)
   const statusLabel =
     shell.status === 'done'
       ? `exit ${shell.exit_code ?? '?'}`
       : shell.status === 'running'
-        ? '运行中'
+        ? t('gate.running')
         : shell.status === 'failed'
-          ? '失败'
+          ? t('gate.failed')
           : shell.status === 'timeout'
-            ? '超时'
+            ? t('gate.timeout')
             : rejected
-              ? '已拒绝'
-              : '待运行'
+              ? t('gate.rejected')
+              : t('gate.pendingRun')
 
   return (
     <div
+      id={`gate-shell-${shell.id}`}
+      data-gate-kind="shell"
+      data-gate-id={shell.id}
       className={[
-        'overflow-hidden rounded-xl border bg-[var(--bg-elevated)] transition-shadow',
-        pending
-          ? 'border-[var(--border)] border-l-2 border-l-[var(--accent-solid)] shadow-[0_0_28px_rgba(134,59,255,0.12)]'
+        'overflow-hidden rounded-xl border bg-[var(--bg-elevated)] transition-[box-shadow,border-color] duration-300',
+        highlighted
+          ? 'border-[var(--accent)] shadow-[0_0_0_2px_var(--accent-bg),0_0_28px_rgba(134,59,255,0.25)]'
           : 'border-[var(--border)]',
       ].join(' ')}
     >
@@ -137,7 +183,7 @@ function ShellCard({
             <span className="mr-1 text-[var(--text-dim)]">{expanded ? '▾' : '▸'}</span>$ {shell.command}
             <button
               type="button"
-              title="复制命令"
+              title={t('gate.copyCommand')}
               onClick={(e) => {
                 e.stopPropagation()
                 navigator.clipboard.writeText(shell.command).then(() => {
@@ -190,7 +236,7 @@ function ShellCard({
                 onClick={onReject}
                 className="rounded-md px-2.5 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)] disabled:opacity-40"
               >
-                Reject
+                {t('common.reject')}
               </button>
               <button
                 type="button"
@@ -198,7 +244,7 @@ function ShellCard({
                 onClick={onApply}
                 className="rounded-md bg-[var(--accent-solid)] px-2.5 py-1 text-xs font-medium text-white transition-all hover:brightness-110 active:scale-[0.96] disabled:opacity-40"
               >
-                {busy ? '…' : 'Run'}
+                {busy ? '…' : t('gate.run')}
               </button>
             </>
           )}
@@ -209,7 +255,7 @@ function ShellCard({
               onClick={onRetry}
               className="rounded-md bg-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/30 disabled:opacity-40"
             >
-              {busy ? '…' : 'Retry'}
+              {busy ? '…' : t('common.retry')}
             </button>
           )}
         </div>

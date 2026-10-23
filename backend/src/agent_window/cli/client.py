@@ -1,4 +1,4 @@
-"""HTTP client for Hal Agent Runtime (stdlib only)."""
+"""HTTP client for Loop Agent Runtime (stdlib only)."""
 
 from __future__ import annotations
 

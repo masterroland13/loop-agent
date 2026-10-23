@@ -1,5 +1,9 @@
 import type { ApiMessage } from '../api/agent'
 import type { MessagePair, ToolTraceItem, TurnMeta } from '../types'
+import {
+  activityEventsFromTrace,
+  buildTurnActivity,
+} from './turnActivity'
 
 export interface TurnEvent {
   type: string
@@ -108,7 +112,10 @@ export function eventsToToolTrace(events: TurnEvent[]): ToolTraceItem[] {
       } else {
         trace.push(item)
       }
-    } else if (ev.type === 'gate' && ev.status === 'pending') {
+    } else if (
+      (ev.type === 'gate' || ev.type === 'diff' || ev.type === 'shell' || ev.type === 'memory') &&
+      ev.status === 'pending'
+    ) {
       const last = trace[trace.length - 1]
       if (last?.status === 'running') {
         trace[trace.length - 1] = {
@@ -198,7 +205,19 @@ export function hydrateAssistantFromTrace(
   assistant: ApiMessage,
   summaryState?: AssistantSummaryState,
   turnMeta?: TurnMeta,
-): Pick<MessagePair, 'toolTrace' | 'goal' | 'previousGoal' | 'progressCheckpoint' | 'turnInProgress' | 'failed'> {
+): Pick<
+  MessagePair,
+  | 'toolTrace'
+  | 'goal'
+  | 'previousGoal'
+  | 'progressCheckpoint'
+  | 'turnInProgress'
+  | 'failed'
+  | 'softLanded'
+  | 'activityEvents'
+  | 'activity'
+  | 'activityStartedAt'
+> {
   const events: TurnEvent[] = (assistant.trace || []).map((ev) => ({
     type: String(ev.type ?? ''),
     ts: typeof ev.ts === 'number' ? ev.ts : undefined,
@@ -222,6 +241,15 @@ export function hydrateAssistantFromTrace(
     parsed?.kind === 'cancelled' ||
     parsed?.kind === 'failed' ||
     events.some((e) => e.type === 'error' && e.status === 'TURN_CANCELLED')
+  const softFromTrace = events.some((e) => e.type === 'soft_land')
+  const softFromContent =
+    typeof assistant.content === 'string' &&
+    (assistant.content.includes('工具轮次已用尽') || assistant.content.includes('提前收口'))
+  const activityEvents = activityEventsFromTrace(
+    (assistant.trace || []) as Array<Record<string, unknown>>,
+  )
+  const activity = activityEvents.length > 0 ? buildTurnActivity(activityEvents) : undefined
+  const firstTs = events.find((e) => typeof e.ts === 'number')?.ts
   return {
     toolTrace: events.length > 0 ? eventsToToolTrace(events) : undefined,
     goal: latestGoal(events) ?? meta?.goal,
@@ -229,6 +257,10 @@ export function hydrateAssistantFromTrace(
     progressCheckpoint: latestProgressCheckpoint(events),
     turnInProgress: isAssistantTurnInProgress(assistant, parsed),
     failed: failed || undefined,
+    softLanded: softFromTrace || softFromContent || undefined,
+    activityEvents: activityEvents.length > 0 ? activityEvents : undefined,
+    activity,
+    activityStartedAt: firstTs,
   }
 }
 
@@ -250,15 +282,42 @@ export function mergeStoppedFailedState(prev: MessagePair[], loaded: MessagePair
   return merged
 }
 
-export function buildMessagePairs(messages: ApiMessage[]): MessagePair[] {
-  const sorted = [...messages].sort((a, b) => a.sequence - b.sequence)
-  const pairs: MessagePair[] = []
+/** Walk parent_id chain leaf→root, return root→leaf. */
+export function walkPathToRoot(messages: ApiMessage[], leafId: string): ApiMessage[] {
+  const byId = new Map(messages.map((m) => [m.id, m]))
+  const path: ApiMessage[] = []
+  const seen = new Set<string>()
+  let currentId: string | null | undefined = leafId
+  while (currentId) {
+    if (seen.has(currentId)) break
+    seen.add(currentId)
+    const msg = byId.get(currentId)
+    if (!msg) break
+    path.push(msg)
+    currentId = msg.parent_id ?? null
+  }
+  path.reverse()
+  return path
+}
 
-  for (let i = 0; i < sorted.length; i += 1) {
-    const user = sorted[i]
+/** Prefer session leaf_id; else newest by sequence (matches backend fallback). */
+export function resolveLeafId(messages: ApiMessage[], leafId?: string | null): string | null {
+  if (leafId && messages.some((m) => m.id === leafId)) return leafId
+  if (messages.length === 0) return null
+  let best = messages[0]
+  for (const m of messages) {
+    if (m.sequence > best.sequence) best = m
+  }
+  return best.id
+}
+
+function pairAlongOrderedMessages(ordered: ApiMessage[]): MessagePair[] {
+  const pairs: MessagePair[] = []
+  for (let i = 0; i < ordered.length; i += 1) {
+    const user = ordered[i]
     if (user.role !== 'user') continue
 
-    const next = sorted[i + 1]
+    const next = ordered[i + 1]
     const assistant: ApiMessage =
       next?.role === 'assistant'
         ? next
@@ -298,6 +357,31 @@ export function buildMessagePairs(messages: ApiMessage[]): MessagePair[] {
 
     if (next?.role === 'assistant') i += 1
   }
-
   return pairs
+}
+
+/**
+ * Build chat pairs for the active session tip.
+ * After regenerate, siblings share a user: sequence pairing would stick to the *old*
+ * assistant. We walk parent_id from leaf_id (or max sequence) so the UI shows the tip path.
+ */
+export function buildMessagePairs(
+  messages: ApiMessage[],
+  leafId?: string | null,
+): MessagePair[] {
+  if (messages.length === 0) return []
+
+  const hasParentLinks = messages.some((m) => m.parent_id != null && m.parent_id !== '')
+  const tip = resolveLeafId(messages, leafId)
+
+  if (hasParentLinks && tip) {
+    const path = walkPathToRoot(messages, tip)
+    // Degenerate (broken ids): fall back to linear sequence
+    if (path.length >= 1) {
+      return pairAlongOrderedMessages(path)
+    }
+  }
+
+  const sorted = [...messages].sort((a, b) => a.sequence - b.sequence)
+  return pairAlongOrderedMessages(sorted)
 }

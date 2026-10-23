@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
 GOAL_MARKER = "【本轮目标】"
@@ -19,6 +20,20 @@ _AFFIRMATION_RE = re.compile(
 _CONTINUATION_PREFIX_RE = re.compile(
     r"^(好的|好|行|可以|继续|同意|嗯|哦|ok|okay|yes|sure|go|continue|继续吧|请继续|那就这样|收到)"
     r"[，,。.!！\s]+",
+    re.IGNORECASE,
+)
+
+# Long pasted dumps (e.g. LangGraph traces) without a clear new ask at the top.
+_FILLER_MIN_LEN = 160
+_LONG_FIRST_PARA = 120
+
+_TASK_START_RE = re.compile(
+    r"^(请|帮我|帮忙|需要|务必|直接|改|换成|聚焦|专注|只|先|现在|麻烦|能否)",
+    re.IGNORECASE,
+)
+
+_TASK_VERB_RE = re.compile(
+    r"(请|帮我|修复|列出|运行|解释|实现|添加|删除|更新|检查|排查|查看|创建|修改|对照|收工|只跑|改成)",
     re.IGNORECASE,
 )
 
@@ -40,6 +55,27 @@ def is_continuation_followup(text: str) -> bool:
     if is_low_info_followup(t):
         return True
     return bool(_CONTINUATION_PREFIX_RE.match(t))
+
+
+def is_exploratory_filler(text: str) -> bool:
+    """True for very long user text that likely pastes context without a new directive."""
+    t = (text or "").strip()
+    if len(t) < _FILLER_MIN_LEN:
+        return False
+    first_para = re.split(r"\n\s*\n", t, maxsplit=1)[0].strip()
+    if _TASK_START_RE.match(first_para):
+        return False
+    if _TASK_VERB_RE.search(t[:96]):
+        return False
+    return True
+
+
+def _inherit_prior_substantive_goal(prior_user_texts: Sequence[str]) -> Optional[str]:
+    for prev in reversed(list(prior_user_texts)):
+        p = (prev or "").strip()
+        if p and not is_low_info_followup(p):
+            return clip_goal(p)
+    return None
 
 
 def clip_goal(text: str, max_len: int = _MAX_GOAL_CHARS) -> str:
@@ -65,11 +101,16 @@ def extract_turn_goal(
     so the loop does not drift into aimless exploration.
     """
     text = (user_text or "").strip()
-    if is_continuation_followup(text) and prior_user_texts:
-        for prev in reversed(list(prior_user_texts)):
-            p = (prev or "").strip()
-            if p and not is_low_info_followup(p):
-                return clip_goal(p)
+    priors = list(prior_user_texts or [])
+    if priors:
+        if is_continuation_followup(text):
+            inherited = _inherit_prior_substantive_goal(priors)
+            if inherited:
+                return inherited
+        if is_exploratory_filler(text):
+            inherited = _inherit_prior_substantive_goal(priors)
+            if inherited:
+                return inherited
     if not text:
         return "完成本轮用户请求"
     return clip_goal(text)
@@ -201,3 +242,77 @@ def previous_turn_goal_from_messages(messages: Sequence[Any]) -> Optional[str]:
 
 def goals_equal(a: Optional[str], b: Optional[str]) -> bool:
     return clip_goal(a or "") == clip_goal(b or "")
+
+
+@dataclass(frozen=True)
+class GoalResolution:
+    """Result of resolving a turn goal (F1 extract / F8 pin / change note)."""
+
+    turn_goal: Optional[str]
+    previous_goal: Optional[str]
+    """Set only when the goal changed from the prior assistant turn."""
+    changed: bool
+    source: str
+    """extract | regenerate | pinned — used in goal.change audit."""
+
+
+def resolve_turn_goal(
+    *,
+    goal_mode: bool,
+    user_text: str,
+    history_messages: Sequence[Any],
+    pinned_goal: Optional[str] = None,
+    audit_source: str = "extract",
+) -> GoalResolution:
+    """Resolve sticky turn goal when Goal mode is on (F1 + F8 pin).
+
+    - Goal OFF → no goal.
+    - ``pinned_goal`` set → use clipped pin (manual override).
+    - else → ``extract_turn_goal`` from user text + history.
+    """
+    if not goal_mode:
+        return GoalResolution(
+            turn_goal=None,
+            previous_goal=None,
+            changed=False,
+            source=audit_source,
+        )
+
+    prev_goal = previous_turn_goal_from_messages(history_messages)
+    pin = (pinned_goal or "").strip()
+    if pin:
+        turn_goal = clip_goal(pin)
+        source = "pinned"
+    else:
+        turn_goal = extract_turn_goal(
+            user_text,
+            prior_user_texts_from_history(history_messages),
+        )
+        source = audit_source
+
+    changed = bool(prev_goal) and not goals_equal(prev_goal, turn_goal)
+    return GoalResolution(
+        turn_goal=turn_goal,
+        previous_goal=(prev_goal if changed else None),
+        changed=changed,
+        source=source,
+    )
+
+
+def goal_change_audit_payload(resolution: GoalResolution) -> Optional[Dict[str, Any]]:
+    """F8: payload for ``goal.change`` audit, or None when unchanged / no goal."""
+    if not resolution.changed or not resolution.turn_goal:
+        return None
+    return {
+        "previous_goal": resolution.previous_goal,
+        "goal": resolution.turn_goal,
+        "source": resolution.source,
+    }
+
+
+def normalize_pinned_goal(text: Optional[str]) -> Optional[str]:
+    """Empty / whitespace → None; else clipped goal string."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    return clip_goal(raw)

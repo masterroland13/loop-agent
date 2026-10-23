@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
+import { useT } from '../i18n'
 import type { PendingPatch } from '../types'
 
 interface DiffPanelProps {
@@ -8,6 +9,8 @@ interface DiffPanelProps {
   onApplyPartial?: (id: string, hunkIds: number[]) => void
   onRetry?: (id: string) => void
   busyId?: string | null
+  /** Activity timeline focus — scroll + highlight matching card. */
+  focusId?: string | null
 }
 
 function isActionablePatch(status: PendingPatch['status']) {
@@ -20,11 +23,44 @@ function isActionablePatch(status: PendingPatch['status']) {
   )
 }
 
-export function DiffPanel({ patches, onApply, onReject, onApplyPartial, onRetry, busyId }: DiffPanelProps) {
+export function DiffPanel({
+  patches,
+  onApply,
+  onReject,
+  onApplyPartial,
+  onRetry,
+  busyId,
+  focusId,
+}: DiffPanelProps) {
+  const t = useT()
   const visible = patches.filter((p) => p.status !== 'cancelled')
   const actionable = visible.filter((p) => isActionablePatch(p.status))
   const applied = visible.filter((p) => p.status === 'applied')
   const [showApplied, setShowApplied] = useState(false)
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+
+  useLayoutEffect(() => {
+    if (!focusId) return
+    const patch = patches.find((p) => p.id === focusId && p.status !== 'cancelled')
+    if (!patch) return
+    if (patch.status === 'applied') setShowApplied(true)
+  }, [focusId, patches])
+
+  useEffect(() => {
+    if (!focusId) return
+    if (!patches.some((p) => p.id === focusId && p.status !== 'cancelled')) return
+    const timer = window.setTimeout(() => {
+      const el = document.getElementById(`gate-patch-${focusId}`)
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      setHighlightId(focusId)
+    }, 30)
+    const clear = window.setTimeout(() => setHighlightId(null), 2200)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(clear)
+    }
+  }, [focusId, showApplied, patches])
+
   if (visible.length === 0) return null
 
   const renderCard = (patch: PendingPatch) => (
@@ -32,6 +68,7 @@ export function DiffPanel({ patches, onApply, onReject, onApplyPartial, onRetry,
       key={patch.id}
       patch={patch}
       busy={busyId === patch.id}
+      highlighted={highlightId === patch.id}
       onApply={() => onApply(patch.id)}
       onReject={() => onReject(patch.id)}
       onApplyPartial={onApplyPartial ? (ids) => onApplyPartial(patch.id, ids) : undefined}
@@ -51,7 +88,7 @@ export function DiffPanel({ patches, onApply, onReject, onApplyPartial, onRetry,
               className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:text-[var(--text-h)]"
             >
               <span className="text-[var(--text-dim)]">{showApplied ? '▾' : '▸'}</span>
-              <span>已应用 {applied.length} 处改动</span>
+              <span>{t('gate.appliedCount', { n: applied.length })}</span>
             </button>
             {showApplied && (
               <div className="space-y-2 border-t border-[var(--border-subtle)] px-2 pb-2 pt-2">
@@ -91,6 +128,7 @@ function parseHunks(unifiedDiff: string): DiffHunk[] {
 function DiffCard({
   patch,
   busy,
+  highlighted,
   onApply,
   onReject,
   onApplyPartial,
@@ -98,11 +136,13 @@ function DiffCard({
 }: {
   patch: PendingPatch
   busy: boolean
+  highlighted?: boolean
   onApply: () => void
   onReject: () => void
   onApplyPartial?: (hunkIds: number[]) => void
   onRetry?: () => void
 }) {
+  const t = useT()
   const pending = patch.status === 'pending'
   const rejected = patch.status === 'rejected'
   const failed = patch.status === 'failed' || patch.status === 'timeout'
@@ -114,22 +154,27 @@ function DiffCard({
     return new Set(Array.from({ length: count }, (_, i) => i))
   })
   const hunks = parseHunks(patch.unified_diff || '')
-  const hasHunks = hunks.length > 0 && !patch.is_delete
+  const hasHunks = hunks.length > 0
   const allSelected = selectedHunks.size === hunks.length
   const noneSelected = selectedHunks.size === 0
+
+  useEffect(() => {
+    if (highlighted) setExpanded(true)
+  }, [highlighted])
+
   const statusLabel =
     patch.status === 'applied'
-      ? '已应用'
+      ? t('gate.applied')
       : partial
-        ? '部分应用'
+        ? t('gate.partial')
         : patch.status === 'failed'
-          ? '失败'
+          ? t('gate.failed')
           : patch.status === 'timeout'
-            ? '超时'
+            ? t('gate.timeout')
             : rejected
-              ? '已拒绝'
+              ? t('gate.rejected')
               : pending
-                ? '待审批'
+                ? t('gate.pending')
                 : patch.status
 
   const toggleHunk = (idx: number) => {
@@ -151,10 +196,13 @@ function DiffCard({
 
   return (
     <div
+      id={`gate-patch-${patch.id}`}
+      data-gate-kind="patch"
+      data-gate-id={patch.id}
       className={[
-        'overflow-hidden rounded-xl border bg-[var(--bg-elevated)] transition-shadow',
-        pending
-          ? 'border-[var(--border)] border-l-2 border-l-[var(--accent-solid)] shadow-[0_0_28px_rgba(134,59,255,0.12)]'
+        'overflow-hidden rounded-xl border bg-[var(--bg-elevated)] transition-[box-shadow,border-color] duration-300',
+        highlighted
+          ? 'border-[var(--accent)] shadow-[0_0_0_2px_var(--accent-bg),0_0_28px_rgba(134,59,255,0.25)]'
           : 'border-[var(--border)]',
       ].join(' ')}
     >
@@ -165,7 +213,7 @@ function DiffCard({
           className="min-w-0 flex-1 truncate text-left font-mono text-xs text-[var(--text-h)]"
         >
           <span className="mr-1 text-[var(--text-dim)]">{expanded ? '▾' : '▸'}</span>
-          {patch.is_delete ? '删除文件 ' : patch.is_new_file ? '新建 ' : '修改 '}
+          {patch.is_new_file ? `${t('gate.newFile')} ` : `${t('gate.modify')} `}
           {patch.path}
           <span
             className={[
@@ -193,7 +241,7 @@ function DiffCard({
                 onClick={onReject}
                 className="rounded-md px-2.5 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)] disabled:opacity-40"
               >
-                Reject
+                {t('common.reject')}
               </button>
               {hasHunks && onApplyPartial && !allSelected && !noneSelected && (
                 <button
@@ -202,7 +250,9 @@ function DiffCard({
                   onClick={() => onApplyPartial([...selectedHunks].sort())}
                   className="rounded-md bg-sky-500/20 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/30 disabled:opacity-40"
                 >
-                  {busy ? '…' : `Apply 选中 (${selectedHunks.size}/${hunks.length})`}
+                  {busy
+                    ? '…'
+                    : t('gate.applySelected', { n: selectedHunks.size, total: hunks.length })}
                 </button>
               )}
               <button
@@ -211,7 +261,7 @@ function DiffCard({
                 onClick={hasHunks && !allSelected && onApplyPartial ? () => onApplyPartial([...selectedHunks].sort()) : onApply}
                 className="rounded-md bg-[var(--accent-solid)] px-2.5 py-1 text-xs font-medium text-white transition-all hover:brightness-110 active:scale-[0.96] disabled:opacity-40"
               >
-                {busy ? '…' : 'Apply'}
+                {busy ? '…' : t('common.apply')}
               </button>
             </>
           )}
@@ -222,7 +272,7 @@ function DiffCard({
               onClick={onRetry}
               className="rounded-md bg-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/30 disabled:opacity-40"
             >
-              {busy ? '…' : 'Retry'}
+              {busy ? '…' : t('common.retry')}
             </button>
           )}
         </div>
@@ -238,10 +288,10 @@ function DiffCard({
                   onChange={toggleAll}
                   className="h-3 w-3 rounded accent-[var(--accent)]"
                 />
-                全选
+                {t('gate.selectAll')}
               </label>
               <span className="text-[10px] text-[var(--text-dim)]">
-                {selectedHunks.size}/{hunks.length} 块
+                {t('gate.hunkCount', { n: selectedHunks.size, total: hunks.length })}
               </span>
             </div>
           )}
@@ -303,4 +353,3 @@ function DiffCard({
     </div>
   )
 }
-

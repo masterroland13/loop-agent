@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
@@ -10,7 +11,9 @@ import { ChevronIcon } from './ChevronIcon'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import {
   MenuBellIcon,
+  MenuBindFolderIcon,
   MenuCopyIcon,
+  MenuFolderIcon,
   MenuHashIcon,
   MenuPencilIcon,
   MenuPinIcon,
@@ -21,15 +24,21 @@ import {
   UnreadDot,
 } from './ContextMenuIcons'
 import { OpenWorkspaceMenu } from './OpenWorkspaceMenu'
+import { WorkedForText } from './WorkedForText'
+import { useT } from '../i18n'
 
 interface ChatSession {
   id: string
   title: string
   updatedAt?: string
+  /** Time of the latest user instruction. Falls back to chat creation. */
+  promptAt?: string
   isActive?: boolean
   isPinned?: boolean
   isUnread?: boolean
   showUnreadDot?: boolean
+  /** Agent turn still running (sidebar title uses Worked-for shimmer). */
+  isBusy?: boolean
 }
 
 interface SidebarProps {
@@ -52,6 +61,7 @@ interface SidebarProps {
   onOpenFavorites: () => void
   onActivateProject: (projectId: string) => void
   onSwitchSession: (id: string) => void
+  onWarmSession?: (id: string) => void
   /** Create a chat in the given project (defaults to active). */
   onNewSession: (projectId?: string) => void
   onDeleteSession: (id: string) => void
@@ -64,6 +74,8 @@ interface SidebarProps {
   onMarkUnread?: (sessionId: string) => void
   onCopySessionId?: (sessionId: string) => void
   onCopyTranscript?: (sessionId: string) => void | Promise<void>
+  /** Bind an unbound session to an existing workspace project. */
+  onBindSessionToProject?: (sessionId: string, project: Project) => void | Promise<void>
 }
 
 export function Sidebar({
@@ -85,6 +97,7 @@ export function Sidebar({
   onOpenFavorites,
   onActivateProject,
   onSwitchSession,
+  onWarmSession,
   onNewSession,
   onDeleteSession,
   onRenameSession,
@@ -95,7 +108,9 @@ export function Sidebar({
   onMarkUnread,
   onCopySessionId,
   onCopyTranscript,
+  onBindSessionToProject,
 }: SidebarProps) {
+  const t = useT()
   const [openWorkspaceMenu, setOpenWorkspaceMenu] = useState(false)
   const openWorkspaceBtnRef = useRef<HTMLButtonElement>(null)
   const [contextMenu, setContextMenu] = useState<{
@@ -113,7 +128,22 @@ export function Sidebar({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [bindConfirm, setBindConfirm] = useState<{
+    sessionId: string
+    sessionTitle: string
+    project: Project
+  } | null>(null)
+  const [bindBusy, setBindBusy] = useState(false)
   const [isResizing, setIsResizing] = useState(false)
+  const [clock, setClock] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => setClock((n) => n + 1), 30000)
+    return () => window.clearInterval(id)
+  }, [])
+  const relativeLabel = (value?: string) => {
+    void clock
+    return value ? formatRelativeTime(value) : ''
+  }
   const dragStartX = useRef(0)
   const dragStartWidth = useRef(width)
 
@@ -207,7 +237,7 @@ export function Sidebar({
       {
         type: 'item',
         id: 'remove',
-        label: 'Remove from Sidebar',
+        label: t('sidebar.removeFromSidebar'),
         icon: <MenuSidebarRemoveIcon />,
         disabled: project.id === UNBOUND_PROJECT_ID || !project.root,
         onClick: () => onRemoveProject(project.id),
@@ -219,13 +249,17 @@ export function Sidebar({
   const openSessionContextMenu = (e: React.MouseEvent, chat: ChatSession) => {
     e.preventDefault()
     const unread = chat.isUnread ?? false
+    const projectId = projectIdForSession(chat.id)
+    const isUnbound = projectId === UNBOUND_PROJECT_ID
+    const bindTargets = projects.filter((p) => p.id !== UNBOUND_PROJECT_ID && Boolean(p.root))
+
     const items: ContextMenuItem[] = [
       ...(onTogglePin
         ? [
             {
               type: 'item' as const,
               id: 'pin',
-              label: chat.isPinned ? 'Unpin' : 'Pin',
+              label: chat.isPinned ? t('sidebar.unpin') : t('sidebar.pin'),
               icon: <MenuPinIcon />,
               onClick: () => onTogglePin(chat.id),
             },
@@ -234,7 +268,7 @@ export function Sidebar({
       {
         type: 'item',
         id: 'rename',
-        label: 'Rename',
+        label: t('sidebar.rename'),
         icon: <MenuPencilIcon />,
         onClick: () => beginRename(chat.id, chat.title),
       },
@@ -243,9 +277,43 @@ export function Sidebar({
             {
               type: 'item' as const,
               id: 'read-state',
-              label: unread ? 'Mark as Read' : 'Mark as Unread',
+              label: unread ? t('sidebar.markRead') : t('sidebar.markUnread'),
               icon: <MenuBellIcon withDot={!unread} />,
               onClick: () => (unread ? onMarkRead(chat.id) : onMarkUnread(chat.id)),
+            },
+          ]
+        : []),
+      ...(isUnbound && onBindSessionToProject
+        ? [
+            {
+              type: 'submenu' as const,
+              id: 'bind-folder',
+              label: t('sidebar.bindFolder'),
+              icon: <MenuBindFolderIcon />,
+              children:
+                bindTargets.length === 0
+                  ? [
+                      {
+                        type: 'item' as const,
+                        id: 'bind-empty',
+                        label: t('sidebar.noWorkspace'),
+                        disabled: true,
+                        onClick: () => {},
+                      },
+                    ]
+                  : bindTargets.map((p) => ({
+                      type: 'item' as const,
+                      id: `bind-${p.id}`,
+                      label: p.name,
+                      icon: <MenuFolderIcon />,
+                      onClick: () => {
+                        setBindConfirm({
+                          sessionId: chat.id,
+                          sessionTitle: chat.title,
+                          project: p,
+                        })
+                      },
+                    })),
             },
           ]
         : []),
@@ -255,7 +323,7 @@ export function Sidebar({
             {
               type: 'submenu' as const,
               id: 'copy',
-              label: 'Copy',
+              label: t('sidebar.copy'),
               icon: <MenuCopyIcon />,
               children: [
                 ...(onCopySessionId
@@ -263,7 +331,7 @@ export function Sidebar({
                       {
                         type: 'item' as const,
                         id: 'copy-id',
-                        label: 'Copy Agent ID',
+                        label: t('sidebar.copyAgentId'),
                         icon: <MenuHashIcon />,
                         onClick: () => onCopySessionId(chat.id),
                       },
@@ -274,7 +342,7 @@ export function Sidebar({
                       {
                         type: 'item' as const,
                         id: 'copy-transcript',
-                        label: 'Copy Transcript',
+                        label: t('sidebar.copyTranscript'),
                         icon: <MenuTranscriptIcon />,
                         onClick: () => {
                           void onCopyTranscript(chat.id)
@@ -290,7 +358,7 @@ export function Sidebar({
       {
         type: 'item',
         id: 'delete',
-        label: 'Delete',
+        label: t('sidebar.delete'),
         icon: <MenuTrashIcon />,
         danger: true,
         disabled: isStreaming,
@@ -307,7 +375,7 @@ export function Sidebar({
           type="button"
           onClick={() => onNewSession()}
           disabled={isLoading || isStreaming}
-          title="New Chat"
+          title={t('sidebar.newChat')}
           className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)] disabled:opacity-40"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
@@ -315,13 +383,13 @@ export function Sidebar({
           </svg>
         </button>
         <div className="mt-auto flex flex-col items-center gap-1">
-          <FooterIconButton title={isDark ? '切换浅色模式' : '切换深色模式'} onClick={onToggleTheme}>
+          <FooterIconButton title={isDark ? t('sidebar.themeToLight') : t('sidebar.themeToDark')} onClick={onToggleTheme}>
             {isDark ? <SunIcon /> : <MoonIcon />}
           </FooterIconButton>
-          <FooterIconButton title="设置" onClick={onOpenSettings}>
+          <FooterIconButton title={t('sidebar.settings')} onClick={onOpenSettings}>
             <SettingsIcon />
           </FooterIconButton>
-          <FooterIconButton title="展开" onClick={onToggleCollapsed}>
+          <FooterIconButton title={t('sidebar.expand')} onClick={onToggleCollapsed}>
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
               <path d="M13 5l7 7-7 7M5 5l7 7-7 7" />
             </svg>
@@ -346,15 +414,15 @@ export function Sidebar({
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
             <path d="M12 5v14M5 12h14" />
           </svg>
-          New Chat
+          {t('sidebar.newChat')}
         </button>
       </div>
 
       <nav className="mt-2 flex flex-col gap-0.5 px-2">
-        <NavItem icon="search" label="Search" onClick={onOpenSearch} />
+        <NavItem icon="search" label={t('sidebar.search')} onClick={onOpenSearch} />
         <NavItem
           icon="star"
-          label="收藏内容"
+          label={t('sidebar.favorites')}
           badge={favoriteCount > 0 ? favoriteCount : undefined}
           onClick={onOpenFavorites}
         />
@@ -362,13 +430,13 @@ export function Sidebar({
 
       <div className="mt-3 flex items-center gap-1 px-2">
         <div className="min-w-0 flex-1 px-1 text-[13.5px] font-medium tracking-[0.01em] text-[var(--sidebar-text)]">
-          Workspaces
+          {t('sidebar.workspaces')}
         </div>
         <button
           ref={openWorkspaceBtnRef}
           type="button"
-          title="Open Workspace"
-          aria-label="Open Workspace"
+          title={t('sidebar.openWorkspace')}
+          aria-label={t('sidebar.openWorkspace')}
           aria-expanded={openWorkspaceMenu}
           onClick={() => setOpenWorkspaceMenu((v) => !v)}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
@@ -405,7 +473,7 @@ export function Sidebar({
               >
                 <button
                   type="button"
-                  title={isOpen ? '收起' : '展开'}
+                  title={isOpen ? t('sidebar.collapse') : t('sidebar.expand')}
                   onClick={() => toggleExpand(project.id)}
                   className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]"
                 >
@@ -413,7 +481,7 @@ export function Sidebar({
                 </button>
                 <button
                   type="button"
-                  title={project.root || '未绑定本地目录'}
+                  title={project.root || t('sidebar.unboundDir')}
                   onClick={() => {
                     onActivateProject(project.id)
                     setExpanded((prev) => ({ ...prev, [project.id]: true }))
@@ -422,12 +490,19 @@ export function Sidebar({
                 >
                   <FolderIcon open={isOpen} />
                   <span className="min-w-0 truncate text-[13.5px] font-medium tracking-[0.01em]">
-                    {project.name}
+                    {project.id === UNBOUND_PROJECT_ID
+                      ? t('workspace.unboundName')
+                      : project.name}
                   </span>
                 </button>
                 <button
                   type="button"
-                  title={`在「${project.name}」下新建对话`}
+                  title={t('sidebar.newUnderProject', {
+                    name:
+                      project.id === UNBOUND_PROJECT_ID
+                        ? t('workspace.unboundName')
+                        : project.name,
+                  })}
                   disabled={isLoading || isStreaming}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -446,9 +521,9 @@ export function Sidebar({
               {isOpen && (
                 <div className="ml-5 mt-0.5 flex flex-col gap-0.5">
                   {isLoading ? (
-                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">加载中...</span>
+                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">{t('sidebar.loading')}</span>
                   ) : folderSessions.length === 0 ? (
-                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">暂无对话</span>
+                    <span className="px-2 py-1 text-[13.5px] text-[var(--sidebar-muted)]">{t('sidebar.emptyChats')}</span>
                   ) : (
                     folderSessions.map((chat) => {
                       const isRenaming = renamingId === chat.id
@@ -478,7 +553,7 @@ export function Sidebar({
                                 }
                               }}
                               className="min-w-0 flex-1 rounded-md border border-[var(--input-border)] bg-[var(--input-bg)] px-2 py-1 text-[13px] text-[var(--sidebar-text)] shadow-sm outline-none ring-1 ring-transparent transition-[border-color,box-shadow] focus:border-[var(--input-focus)] focus:ring-[var(--accent-bg)]"
-                              aria-label="重命名对话"
+                              aria-label={t('sidebar.renameAria')}
                             />
                           </div>
                         )
@@ -491,7 +566,7 @@ export function Sidebar({
                             className="flex w-full items-center gap-2 rounded-md border border-red-500/20 bg-red-500/[0.06] px-2 py-1.5"
                           >
                             <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--sidebar-text)]">
-                              Delete「{chat.title}」?
+                              {t('sidebar.deleteConfirm', { title: chat.title })}
                             </span>
                             <button
                               type="button"
@@ -501,7 +576,7 @@ export function Sidebar({
                                 setConfirmDeleteId(null)
                               }}
                             >
-                              Cancel
+                              {t('common.cancel')}
                             </button>
                             <button
                               type="button"
@@ -513,7 +588,7 @@ export function Sidebar({
                                 onDeleteSession(chat.id)
                               }}
                             >
-                              Delete
+                              {t('sidebar.delete')}
                             </button>
                           </div>
                         )
@@ -523,8 +598,14 @@ export function Sidebar({
                       return (
                         <div
                           key={chat.id}
+                          onMouseEnter={() => onWarmSession?.(chat.id)}
+                          onClick={() => {
+                            setConfirmDeleteId(null)
+                            onSwitchSession(chat.id)
+                          }}
+                          onDoubleClick={() => beginRename(chat.id, chat.title)}
                           className={[
-                            'group/session flex w-full items-center gap-1 rounded-md py-[5px] pl-1.5 pr-2 transition-colors duration-100',
+                            'group/session flex w-full cursor-pointer items-center gap-1 rounded-md py-[5px] pl-1.5 pr-2 transition-colors duration-100',
                             chat.isActive
                               ? 'bg-[var(--sidebar-active)] text-[var(--sidebar-text)]'
                               : 'text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-hover)] hover:text-[var(--sidebar-text)]',
@@ -533,12 +614,6 @@ export function Sidebar({
                         >
                           <button
                             type="button"
-                            onClick={() => {
-                              setConfirmDeleteId(null)
-                              onActivateProject(project.id)
-                              onSwitchSession(chat.id)
-                            }}
-                            onDoubleClick={() => beginRename(chat.id, chat.title)}
                             className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
                             title={chat.title}
                           >
@@ -548,19 +623,25 @@ export function Sidebar({
                             <span
                               className={[
                                 'min-w-0 flex-1 truncate text-[13px] leading-snug tracking-[0.01em]',
-                                showDot ? 'font-[550] text-[var(--sidebar-text)]' : 'font-[450]',
+                                showDot || chat.isBusy
+                                  ? 'font-[550] text-[var(--sidebar-text)]'
+                                  : 'font-[450]',
                               ].join(' ')}
                             >
-                              {chat.title}
+                              {chat.isBusy ? (
+                                <WorkedForText shimmer>{chat.title}</WorkedForText>
+                              ) : (
+                                chat.title
+                              )}
                             </span>
                           </button>
                           <div className="flex shrink-0 items-center gap-1.5 pl-1">
                             {chat.isPinned && <SessionPinIcon />}
-                            {chat.updatedAt && (
+                            {relativeLabel(chat.promptAt) ? (
                               <span className="text-[11px] tabular-nums text-[var(--text-dim)] opacity-80 group-hover/session:opacity-100">
-                                {formatRelativeTime(chat.updatedAt)}
+                                {relativeLabel(chat.promptAt)}
                               </span>
-                            )}
+                            ) : null}
                           </div>
                         </div>
                       )
@@ -574,21 +655,21 @@ export function Sidebar({
 
         {projects.every((p) => !p.root) && (
           <p className="px-2 py-3 text-xs leading-relaxed text-[var(--sidebar-muted)]">
-            用 This PC 绑定本地目录后，会在这里显示为项目文件夹。
+            {t('sidebar.emptyProjectsHint')}
           </p>
         )}
       </div>
 
       <div className="border-t border-[var(--sidebar-border)] p-3">
         <div className="flex items-center gap-1">
-          <FooterIconButton title={isDark ? '切换浅色模式' : '切换深色模式'} onClick={onToggleTheme}>
+          <FooterIconButton title={isDark ? t('sidebar.themeToLight') : t('sidebar.themeToDark')} onClick={onToggleTheme}>
             {isDark ? <SunIcon /> : <MoonIcon />}
           </FooterIconButton>
-          <FooterIconButton title="设置" onClick={onOpenSettings}>
+          <FooterIconButton title={t('sidebar.settings')} onClick={onOpenSettings}>
             <SettingsIcon />
           </FooterIconButton>
           <div className="flex-1" />
-          <FooterIconButton title="折叠侧边栏" onClick={onToggleCollapsed}>
+          <FooterIconButton title={t('sidebar.collapseSidebar')} onClick={onToggleCollapsed}>
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
               <path d="M11 17l-5-5 5-5M19 17l-5-5 5-5" />
             </svg>
@@ -599,8 +680,8 @@ export function Sidebar({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整侧边栏宽度"
-        title="拖动调整宽度"
+        aria-label={t('sidebar.resizeAria')}
+        title={t('sidebar.resizeTitle')}
         onMouseDown={(e) => {
           e.preventDefault()
           dragStartX.current = e.clientX
@@ -624,6 +705,71 @@ export function Sidebar({
           onClose={() => setContextMenu(null)}
         />
       )}
+
+      {bindConfirm &&
+        createPortal(
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/45"
+              aria-label={t('common.cancel')}
+              disabled={bindBusy}
+              onClick={() => {
+                if (!bindBusy) setBindConfirm(null)
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="bind-confirm-title"
+              className="relative w-full max-w-[340px] rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
+            >
+              <h3
+                id="bind-confirm-title"
+                className="text-[15px] font-semibold text-[var(--text-h)]"
+              >
+                {t('sidebar.bindConfirmTitle')}
+              </h3>
+              <p className="mt-2 text-[13px] leading-relaxed text-[var(--text-muted)]">
+                {t('sidebar.bindConfirmBody', {
+                  session: bindConfirm.sessionTitle,
+                  project:
+                    bindConfirm.project.id === UNBOUND_PROJECT_ID
+                      ? t('workspace.unboundName')
+                      : bindConfirm.project.name,
+                })}
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={bindBusy}
+                  onClick={() => setBindConfirm(null)}
+                  className="rounded-lg px-3 py-1.5 text-[13px] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)] disabled:opacity-40"
+                >
+                  {t('sidebar.bindConfirmCancel')}
+                </button>
+                <button
+                  type="button"
+                  disabled={bindBusy || !onBindSessionToProject}
+                  onClick={() => {
+                    if (!onBindSessionToProject) return
+                    const payload = bindConfirm
+                    setBindBusy(true)
+                    void Promise.resolve(
+                      onBindSessionToProject(payload.sessionId, payload.project),
+                    )
+                      .then(() => setBindConfirm(null))
+                      .finally(() => setBindBusy(false))
+                  }}
+                  className="rounded-lg bg-[var(--text-h)] px-3 py-1.5 text-[13px] font-medium text-[var(--bg)] disabled:opacity-40"
+                >
+                  {bindBusy ? t('common.loading') : t('sidebar.bindConfirmOk')}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </aside>
   )
 }

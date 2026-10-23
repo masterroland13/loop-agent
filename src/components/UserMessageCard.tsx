@@ -1,6 +1,6 @@
 import { ChatInput } from './ChatInput'
 import type { AttachmentMeta } from '../types'
-import type { ChatAttachment } from '../utils/chatAttachment'
+import { isImageAttachment, type ChatAttachment } from '../utils/chatAttachment'
 import { attachmentDownloadUrl } from '../api/agent'
 
 const LINE_CLAMP = 4
@@ -40,10 +40,14 @@ interface UserMessageCardProps {
   onDraftChange: (value: string) => void
   onSend: () => void
   onAttach?: () => void
-  onModelClick?: () => void
-  onThisPc?: () => void
+  onModelClick?: (anchor: DOMRect) => void
   onRemoveAttachment?: (localKey: string) => void
-  pcMode?: boolean
+  goalMode?: boolean
+  onGoalModeToggle?: () => void
+  onMultitask?: () => void
+  onPlanIdea?: () => void
+  pinnedGoal?: string | null
+  onPinnedGoalChange?: (goal: string | null) => void
   modelName?: string
   enterToSend?: boolean
   isStreaming: boolean
@@ -65,9 +69,13 @@ export function UserMessageCard({
   onSend,
   onAttach,
   onModelClick,
-  onThisPc,
   onRemoveAttachment,
-  pcMode,
+  goalMode,
+  onGoalModeToggle,
+  onMultitask,
+  onPlanIdea,
+  pinnedGoal,
+  onPinnedGoalChange,
   modelName,
   enterToSend,
   isStreaming,
@@ -79,19 +87,11 @@ export function UserMessageCard({
 
   return (
     <div
-      className="sticky top-0 mb-6 scroll-mt-6 border-b border-transparent bg-[var(--bg)] pb-2 pt-1 shadow-[0_8px_12px_-8px_var(--bg)]"
-      style={{ zIndex: 20 + index }}
+      className="sticky top-0 mb-3 scroll-mt-6 border-b border-transparent bg-[var(--bg)] pb-3 pt-1 shadow-[0_8px_12px_-8px_var(--bg)]"
+      style={{ zIndex: 1000 - index }}
     >
       {isExpanded ? (
-        <div
-          data-expanded-user-card
-          className={[
-            'rounded-[var(--radius-lg)] transition-[box-shadow,outline-color] duration-200',
-            isActive
-              ? 'outline outline-2 outline-[var(--pair-highlight)] outline-offset-2'
-              : 'outline outline-2 outline-transparent outline-offset-2',
-          ].join(' ')}
-        >
+        <div data-expanded-user-card>
           <ChatInput
             variant="card"
             value={draft}
@@ -101,15 +101,20 @@ export function UserMessageCard({
             }}
             onAttach={onAttach}
             onModelClick={onModelClick}
-            onThisPc={onThisPc}
             onRemoveAttachment={onRemoveAttachment}
-            pcMode={pcMode}
+            goalMode={goalMode}
+            onGoalModeToggle={onGoalModeToggle}
+            onMultitask={onMultitask}
+            onPlanIdea={onPlanIdea}
+            pinnedGoal={pinnedGoal}
+            onPinnedGoalChange={onPinnedGoalChange}
             isStreaming={isStreaming}
             disabled={disabled}
             attachments={attachments}
             modelName={modelName}
             enterToSend={enterToSend}
             placeholder="Send follow-up"
+            highlighted={isActive}
           />
         </div>
       ) : (
@@ -117,7 +122,7 @@ export function UserMessageCard({
           type="button"
           onClick={() => onExpand(pairId, displayUserText(content) || content)}
           className={[
-            'w-full rounded-[var(--radius-lg)] bg-[var(--user-bubble)] px-4 py-3.5 text-left transition-[box-shadow,outline-color] duration-200',
+            'user-bubble-shell w-full px-4 py-2.5 text-left transition-[box-shadow,outline-color] duration-200',
             isActive
               ? 'outline outline-2 outline-[var(--pair-highlight)] outline-offset-2'
               : 'outline outline-2 outline-transparent outline-offset-2 hover:outline-[var(--border-subtle)]',
@@ -125,20 +130,36 @@ export function UserMessageCard({
         >
           {cards.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
-              {cards.map((att) => (
-                <a
-                  key={att.id}
-                  href={resolveAttUrl(sessionId, att)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[13px] text-[var(--accent)] hover:underline"
-                >
-                  {att.filename}
-                  <span className="ml-1.5 text-[11px] text-[var(--text-muted)]">
-                    {att.size >= 1024 ? `${Math.round(att.size / 1024)}KB` : `${att.size}B`}
-                  </span>
-                </a>
-              ))}
+              {cards.map((att) => {
+                const href = resolveAttUrl(sessionId, att)
+                const image = isImageAttachment({
+                  contentType: att.content_type,
+                  filename: att.filename,
+                })
+                return (
+                  <a
+                    key={att.id}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 py-1 text-[13px] text-[var(--accent)] hover:underline"
+                  >
+                    {image ? (
+                      <img
+                        src={href}
+                        alt=""
+                        className="h-8 w-8 rounded object-cover"
+                      />
+                    ) : null}
+                    <span>
+                      {att.filename}
+                      <span className="ml-1.5 text-[11px] text-[var(--text-muted)]">
+                        {att.size >= 1024 ? `${Math.round(att.size / 1024)}KB` : `${att.size}B`}
+                      </span>
+                    </span>
+                  </a>
+                )
+              })}
             </div>
           )}
           {visible ? (

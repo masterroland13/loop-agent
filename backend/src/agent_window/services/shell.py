@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_window.config import settings
+from agent_window.services.attachment_context import get_turn_session_id
 from agent_window.services.session_turns import wait_or_cancel
 from agent_window.services.workspace import WorkspaceError, require_root, resolve_in_workspace
 
@@ -131,6 +132,7 @@ class PendingShell:
     created_at: float = field(default_factory=time.time)
     event: asyncio.Event = field(default_factory=asyncio.Event)
     decision: Optional[str] = None  # apply | reject | timeout | cancelled
+    session_id: Optional[str] = None
 
 
 _shells: Dict[str, PendingShell] = {}
@@ -160,6 +162,7 @@ def _save_shells() -> None:
                 "error": s.error,
                 "created_at": s.created_at,
                 "decision": s.decision,
+                "session_id": s.session_id,
             }
         )
     path = _persist_path()
@@ -212,6 +215,7 @@ def load_persisted_shells() -> int:
             error=item.get("error"),
             created_at=float(item.get("created_at") or time.time()),
             decision=item.get("decision"),
+            session_id=(str(item["session_id"]) if item.get("session_id") else None),
         )
         _shells[shell.id] = shell
         count += 1
@@ -224,8 +228,8 @@ def _binary_name(token: str) -> str:
     return Path(token).name
 
 
-def resolve_hal_python() -> str:
-    """Prefer Hal backend venv interpreter; fall back to python3 on PATH."""
+def resolve_loop_python() -> str:
+    """Prefer the Loop Agent backend venv interpreter; fall back to python3 on PATH."""
     # …/backend/src/agent_window/services/shell.py → backend/
     backend_root = Path(__file__).resolve().parents[3]
     for candidate in (
@@ -239,7 +243,7 @@ def resolve_hal_python() -> str:
 
 def normalize_shell_argv(argv: List[str]) -> List[str]:
     """
-    Rewrite bare `python` to Hal venv / python3 so WSL/openEuler hosts work.
+    Rewrite bare `python` to the Loop Agent venv / python3 so WSL/openEuler hosts work.
 
     Leaves python3, absolute paths, and other binaries unchanged.
     """
@@ -248,7 +252,7 @@ def normalize_shell_argv(argv: List[str]) -> List[str]:
     head = str(argv[0])
     if head != "python":
         return list(argv)
-    return [resolve_hal_python(), *[str(a) for a in argv[1:]]]
+    return [resolve_loop_python(), *[str(a) for a in argv[1:]]]
 
 
 def validate_argv(argv: List[str]) -> List[str]:
@@ -317,6 +321,7 @@ def create_shell_proposal(argv: List[str], cwd: str = ".") -> PendingShell:
         cwd=rel,
         cwd_abs=str(cwd_path),
         command_display=shlex.join(cleaned),
+        session_id=get_turn_session_id(),
     )
     _shells[item.id] = item
     _save_shells()
@@ -339,21 +344,29 @@ def shell_to_public(item: PendingShell) -> Dict[str, Any]:
         "stderr": item.stderr,
         "truncated": item.truncated,
         "error": item.error,
+        "session_id": item.session_id,
     }
 
 
-def list_pending_shells() -> List[Dict[str, Any]]:
-    return [
-        shell_to_public(s)
-        for s in _shells.values()
-        if s.status in LISTABLE_SHELL_STATUSES
-    ]
+def list_pending_shells(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    sid = (session_id or "").strip() or None
+    out: List[Dict[str, Any]] = []
+    for s in _shells.values():
+        if s.status not in LISTABLE_SHELL_STATUSES:
+            continue
+        if sid is not None and (s.session_id or "") != sid:
+            continue
+        out.append(shell_to_public(s))
+    return out
 
 
-def cancel_pending_shells() -> int:
+def cancel_pending_shells(session_id: Optional[str] = None) -> int:
+    sid = (session_id or "").strip() or None
     n = 0
     for item in _shells.values():
         if item.status != ShellStatus.PENDING:
+            continue
+        if sid is not None and (item.session_id or "") != sid:
             continue
         item.status = ShellStatus.CANCELLED
         item.decision = "cancelled"

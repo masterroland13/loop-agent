@@ -171,11 +171,81 @@ export function SessionPinIcon() {
   )
 }
 
+/** Bind session to an existing workspace — folder with inbound arrow (folder-input) */
+export function MenuBindFolderIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1" />
+      <path d="M2 13h10" />
+      <path d="m9 10 3 3-3 3" />
+    </Svg>
+  )
+}
+
+/**
+ * Scissors — Cut.
+ * Two continuous polylines through the pivot (12,12) so blade/handle strokes
+ * don't butt-end at the center and look broken.
+ */
+export function MenuCutIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M20 4 12 12 20 20" />
+      <path d="M8.12 8.12 12 12 8.12 15.88" />
+    </Svg>
+  )
+}
+
+/** New file — matches other menu icon weight */
+export function MenuNewFileIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M12 11v6" />
+      <path d="M9 14h6" />
+    </Svg>
+  )
+}
+
+/** Message + — Add to Chat */
+export function MenuChatAddIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M12 7v6" />
+      <path d="M9 10h6" />
+    </Svg>
+  )
+}
+
+/** External / reveal in file explorer */
+export function MenuRevealIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </Svg>
+  )
+}
+
+/** Folder glyph for Bind submenu workspace rows */
+export function MenuFolderIcon({ className }: IconProps) {
+  return (
+    <Svg className={className}>
+      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 2H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z" />
+    </Svg>
+  )
+}
+
 /** Solid blue unread indicator — Cursor-style */
 export function UnreadDot({ className = '' }: { className?: string }) {
   return (
     <span
-      className={['h-[7px] w-[7px] shrink-0 rounded-full bg-[#3b82f6]', className]
+      className={['h-[5px] w-[5px] shrink-0 rounded-full bg-[#3b82f6]', className]
         .filter(Boolean)
         .join(' ')}
       aria-label="Unread"

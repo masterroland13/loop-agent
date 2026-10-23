@@ -5,6 +5,7 @@ import {
   type AuditEvent,
   type AuditSessionSummary,
 } from '../api/agent'
+import { useT } from '../i18n'
 
 interface SessionOption {
   id: string
@@ -55,6 +56,7 @@ function eventTone(eventType: string): string {
 }
 
 export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: AuditPanelProps) {
+  const t = useT()
   const [events, setEvents] = useState<AuditEvent[]>([])
   const [auditSessions, setAuditSessions] = useState<AuditSessionSummary[]>([])
   const [sessionFilter, setSessionFilter] = useState<string>('all')
@@ -86,11 +88,11 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
       setEvents(evs)
       setAuditSessions(summaries)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载审计失败')
+      setError(err instanceof Error ? err.message : t('audit.loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [sessionFilter, activeSessionId])
+  }, [sessionFilter, activeSessionId, t])
 
   useEffect(() => {
     void load()
@@ -126,7 +128,7 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `hal-audit-${sessionFilter}-${Date.now()}.json`
+    a.download = `loop-audit-${sessionFilter}-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -134,30 +136,31 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex min-w-[9rem] flex-1 flex-col gap-1 text-[11px] text-[var(--text-muted)]">
-          会话
+        <label className="flex min-w-[9rem] flex-1 flex-col gap-1 text-[14px] font-medium text-[var(--text-muted)]">
+          {t('audit.sessionLabel')}
           <select
             value={sessionFilter}
             onChange={(e) => setSessionFilter(e.target.value)}
-            className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text-h)]"
+            className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1.5 text-[14px] text-[var(--text-h)]"
           >
-            <option value="all">全部会话</option>
-            {activeSessionId ? <option value="current">当前会话</option> : null}
+            <option value="all">{t('audit.allSessions')}</option>
+            {activeSessionId ? <option value="current">{t('audit.currentSession')}</option> : null}
             {auditSessions.map((s) => (
               <option key={s.session_id} value={s.session_id}>
-                {(titleById.get(s.session_id) || s.session_id.slice(0, 8)) + ` · ${s.event_count} 条`}
+                {(titleById.get(s.session_id) || s.session_id.slice(0, 8)) +
+                  ` · ${t('audit.eventCount', { count: s.event_count })}`}
               </option>
             ))}
           </select>
         </label>
-        <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-[11px] text-[var(--text-muted)]">
-          类型
+        <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-[14px] font-medium text-[var(--text-muted)]">
+          {t('audit.typeLabel')}
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text-h)]"
+            className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] px-2 py-1.5 text-[14px] text-[var(--text-h)]"
           >
-            <option value="all">全部类型</option>
+            <option value="all">{t('audit.allTypes')}</option>
             <option value="turn.">turn.*</option>
             <option value="patch.">patch.*</option>
             <option value="shell.">shell.*</option>
@@ -173,28 +176,26 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+          className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
         >
-          {loading ? '加载中…' : '刷新'}
+          {loading ? t('common.loading') : t('audit.refresh')}
         </button>
         <button
           type="button"
           onClick={exportJson}
           disabled={filtered.length === 0}
-          className="rounded-md border border-[var(--border-subtle)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
+          className="rounded-md border border-[var(--border-subtle)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
         >
-          导出 JSON
+          {t('audit.exportJson')}
         </button>
       </div>
 
-      <p className="text-[11px] text-[var(--text-dim)]">
-        按会话回放审计事件（审批、压缩、turn 完成等）。展开可看 payload；有 session_id 时可跳转该对话。
-      </p>
+      <p className="text-[14px] text-[var(--text-dim)]">{t('audit.hint')}</p>
 
-      {error && <p className="text-xs text-red-300/90">{error}</p>}
+      {error && <p className="text-[14px] text-red-300/90">{error}</p>}
 
       {filtered.length === 0 && !loading ? (
-        <p className="text-xs text-[var(--text-muted)]">暂无事件</p>
+        <p className="text-[14px] text-[var(--text-muted)]">{t('audit.noEvents')}</p>
       ) : (
         <ul className="max-h-[28rem] space-y-1 overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)]/50 px-2 py-2">
           {filtered.map((ev) => {
@@ -212,21 +213,21 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
                   onClick={() => setExpandedId(open ? null : ev.id)}
                   className="flex w-full items-start gap-2 text-left"
                 >
-                  <span className="mt-0.5 text-[10px] text-[var(--text-dim)]">{open ? '▾' : '▸'}</span>
+                  <span className="mt-0.5 text-[14px] text-[var(--text-dim)]">{open ? '▾' : '▸'}</span>
                   <span className="min-w-0 flex-1">
-                    <span className={`font-mono text-[11px] ${eventTone(ev.event_type)}`}>
+                    <span className={`font-mono text-[14px] ${eventTone(ev.event_type)}`}>
                       {ev.event_type}
                     </span>
-                    <span className="mt-0.5 block truncate text-[10px] text-[var(--text-dim)]">
+                    <span className="mt-0.5 block truncate text-[14px] text-[var(--text-dim)]">
                       {payloadPreview(ev.payload)}
                     </span>
                   </span>
-                  <span className="shrink-0 text-right text-[10px] text-[var(--text-dim)]">
+                  <span className="shrink-0 text-right text-[14px] text-[var(--text-dim)]">
                     <span className="block">{formatTime(ev.created_at)}</span>
                     {sessionTitle ? (
                       <span className="mt-0.5 block max-w-[7rem] truncate opacity-80">{sessionTitle}</span>
                     ) : (
-                      <span className="mt-0.5 block opacity-50">无会话</span>
+                      <span className="mt-0.5 block opacity-50">{t('audit.noSession')}</span>
                     )}
                   </span>
                 </button>
@@ -236,12 +237,12 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
                       <button
                         type="button"
                         onClick={() => onOpenSession(ev.session_id!)}
-                        className="rounded-md bg-[var(--accent-bg)] px-2 py-1 text-[10px] text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
+                        className="rounded-md bg-[var(--accent-bg)] px-2 py-1 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
                       >
-                        打开此会话回放
+                        {t('audit.openSessionReplay')}
                       </button>
                     ) : null}
-                    <pre className="max-h-48 overflow-auto rounded-md bg-[var(--bg)] px-2 py-1.5 font-mono text-[10px] leading-4 text-[var(--text-muted)]">
+                    <pre className="max-h-48 overflow-auto rounded-md bg-[var(--bg)] px-2 py-1.5 font-mono text-[14px] leading-4 text-[var(--text-muted)]">
                       {JSON.stringify(
                         {
                           id: ev.id,
@@ -262,8 +263,8 @@ export function AuditPanel({ activeSessionId, sessions = [], onOpenSession }: Au
         </ul>
       )}
 
-      <div className="text-[10px] text-[var(--text-dim)]">
-        显示 {filtered.length} / {events.length} 条（上限 {LIMIT}）
+      <div className="text-[14px] text-[var(--text-dim)]">
+        {t('audit.showCount', { filtered: filtered.length, total: events.length, limit: LIMIT })}
       </div>
     </div>
   )

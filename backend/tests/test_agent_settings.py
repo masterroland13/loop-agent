@@ -48,3 +48,33 @@ def test_max_tool_iters_invalid_falls_back(data_dir: Path) -> None:
     loaded = load_agent_settings()
     assert loaded["max_tool_iters"] == 24
     assert loaded["max_tool_iters"] != "nope"
+
+
+def test_loop_preset_default_yolo_and_save(data_dir: Path) -> None:
+    from agent_window.services.agent_settings import load_agent_settings, save_agent_settings
+
+    loaded = load_agent_settings()
+    assert loaded["loop_preset"] == "yolo"
+    assert loaded["loop_preset"] != "trusted"
+
+    saved = save_agent_settings({"loop_preset": "trusted"})
+    assert saved["loop_preset"] == "trusted"
+    assert load_agent_settings()["loop_preset"] == "trusted"
+    assert load_agent_settings()["loop_preset"] != "yolo"
+
+    saved = save_agent_settings({"loop_preset": "STRICT"})
+    assert saved["loop_preset"] == "strict"
+
+
+def test_loop_preset_invalid_falls_back_to_yolo(data_dir: Path) -> None:
+    from agent_window.services.agent_settings import load_agent_settings, save_agent_settings
+
+    path = data_dir / "agent_settings.json"
+    path.write_text('{"loop_preset": "chaos"}', encoding="utf-8")
+    loaded = load_agent_settings()
+    assert loaded["loop_preset"] == "yolo"
+    assert loaded["loop_preset"] != "chaos"
+
+    saved = save_agent_settings({"loop_preset": "not-a-preset"})
+    assert saved["loop_preset"] == "yolo"
+    assert saved["loop_preset"] != "not-a-preset"

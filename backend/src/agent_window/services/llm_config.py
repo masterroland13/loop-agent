@@ -1,8 +1,7 @@
-"""LLM base URL / API key / default model, persisted to backend/.env.
+"""LLM config adapter — reads/writes the **active** Model Registry profile.
 
-Saving from the UI writes .env AND updates in-process settings, so the
-next request uses the new values without a restart and restarts keep them.
-The raw key is never returned to the frontend.
+Keeps `/api/llm-config` and older tests working. Optionally syncs `LLM_*` to
+backend/.env for process restarts that still load Settings from env.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_window.config import settings
+from agent_window.services import model_registry as registry
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +24,11 @@ def _env_path() -> Path:
 
 
 def _normalize_base_url(url: str) -> str:
-    value = (url or "").strip().rstrip("/")
-    if value and not (value.startswith("http://") or value.startswith("https://")):
-        raise ValueError("Base URL 必须以 http:// 或 https:// 开头")
-    return value
+    return registry._normalize_base_url(url)
 
 
 def _normalize_model(model: str) -> str:
-    value = (model or "").strip()
-    if not value:
-        raise ValueError("模型 id 不能为空")
-    return value
+    return registry._normalize_model(model)
 
 
 def _write_env(path: Path, updates: Dict[str, str]) -> None:
@@ -66,50 +60,64 @@ def _write_env(path: Path, updates: Dict[str, str]) -> None:
 
 
 def public_llm_config(_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Public view of the active profile + global generation defaults."""
+    # Ensure migrate-once has run.
+    store = registry.load_store()
+    by_id = {p["id"]: p for p in store["profiles"]}
+    active = by_id.get(store["active_id"]) or store["profiles"][0]
     return {
-        "api_key_configured": bool(str(settings.llm_api_key or "").strip()),
-        "base_url": (settings.llm_base_url or "").rstrip("/"),
-        "default_model": settings.llm_model or "",
-        "temperature": settings.llm_temperature,
-        "max_tokens": settings.llm_max_tokens,
+        "api_key_configured": bool(str(active.get("api_key") or "").strip()),
+        "base_url": (active.get("base_url") or "").rstrip("/"),
+        "default_model": active.get("model_id") or "",
+        "temperature": store["temperature"],
+        "max_tokens": store["max_tokens"],
     }
 
 
 def save_llm_config(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update active profile fields and/or global temp/tokens; sync .env."""
+    store = registry.load_store()
+    active_id = store["active_id"]
+    profile_updates: Dict[str, Any] = {}
     env_updates: Dict[str, str] = {}
+
     if "base_url" in updates and updates["base_url"] is not None:
-        env_updates["LLM_BASE_URL"] = _normalize_base_url(str(updates["base_url"]))
+        url = _normalize_base_url(str(updates["base_url"]))
+        profile_updates["base_url"] = url
+        env_updates["LLM_BASE_URL"] = url
     if "api_key" in updates and updates["api_key"] is not None:
         key = str(updates["api_key"]).strip()
         if key:
+            profile_updates["api_key"] = key
             env_updates["LLM_API_KEY"] = key
     if "default_model" in updates and updates["default_model"] is not None:
-        env_updates["LLM_MODEL"] = _normalize_model(str(updates["default_model"]))
+        model = _normalize_model(str(updates["default_model"]))
+        profile_updates["model_id"] = model
+        env_updates["LLM_MODEL"] = model
+
+    globals_kwargs: Dict[str, Any] = {}
     if "temperature" in updates and updates["temperature"] is not None:
         temp = float(updates["temperature"])
         if not (0.0 <= temp <= 2.0):
             raise ValueError("Temperature 必须在 0 到 2 之间")
+        globals_kwargs["temperature"] = temp
         env_updates["LLM_TEMPERATURE"] = str(temp)
     if "max_tokens" in updates and updates["max_tokens"] is not None:
         tokens = int(updates["max_tokens"])
         if not (256 <= tokens <= 200000):
             raise ValueError("Max Tokens 必须在 256 到 200000 之间")
+        globals_kwargs["max_tokens"] = tokens
         env_updates["LLM_MAX_TOKENS"] = str(tokens)
-    if not env_updates:
+
+    if not profile_updates and not globals_kwargs:
         return public_llm_config()
 
-    _write_env(_env_path(), env_updates)
+    if profile_updates:
+        registry.update_profile(active_id, profile_updates)
+    if globals_kwargs:
+        registry.update_globals(**globals_kwargs)
 
-    # Apply in-process so the next request uses the new values immediately.
-    if "LLM_BASE_URL" in env_updates:
-        settings.llm_base_url = env_updates["LLM_BASE_URL"]
-    if "LLM_API_KEY" in env_updates:
-        settings.llm_api_key = env_updates["LLM_API_KEY"]
-    if "LLM_MODEL" in env_updates:
-        settings.llm_model = env_updates["LLM_MODEL"]
-    if "LLM_TEMPERATURE" in env_updates:
-        settings.llm_temperature = float(env_updates["LLM_TEMPERATURE"])
-    if "LLM_MAX_TOKENS" in env_updates:
-        settings.llm_max_tokens = int(env_updates["LLM_MAX_TOKENS"])
+    if env_updates:
+        _write_env(_env_path(), env_updates)
+
     return public_llm_config()
-

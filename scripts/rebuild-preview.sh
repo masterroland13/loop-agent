@@ -7,7 +7,7 @@ echo "restarting preview if any..."
 pkill -f "preview-server" 2>/dev/null || true
 pkill -f "vite preview" 2>/dev/null || true
 # Prefer vite preview on 5173 so localhost:5173 serves fresh build
-nohup npx --yes vite preview --host 0.0.0.0 --port 5173 > /tmp/hal-agent-preview.log 2>&1 &
+nohup npx --yes vite preview --host 0.0.0.0 --port 5173 > /tmp/loop-agent-preview.log 2>&1 &
 sleep 2
 echo "--- preview log ---"
 head -40 /tmp/agent-window-preview.log || true

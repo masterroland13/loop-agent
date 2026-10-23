@@ -99,12 +99,14 @@ def test_loop_emits_checkpoint_after_n_tools(
     monkeypatch.setattr("agent_window.agent.loop.handle_function_call", fake_tool)
 
     from agent_window.agent.loop import run_agent_loop
+    from agent_window.core.loop_config import LoopConfig
 
     async def collect_events() -> list[dict]:
         events: list[dict] = []
         async for ev in run_agent_loop(
             [{"role": "user", "content": "explore repo"}],
             goal="explore repo",
+            config=LoopConfig.default().with_goal_mode(True),
         ):
             events.append(ev)
         return events
@@ -194,12 +196,14 @@ def test_loop_emits_checkpoint_reply_when_continuing_tools(
     )
 
     from agent_window.agent.loop import run_agent_loop
+    from agent_window.core.loop_config import LoopConfig
 
     async def collect_events() -> list[dict]:
         events: list[dict] = []
         async for ev in run_agent_loop(
             [{"role": "user", "content": "explore"}],
             goal="explore",
+            config=LoopConfig.default().with_goal_mode(True),
         ):
             events.append(ev)
         return events
@@ -274,12 +278,14 @@ def test_loop_settles_checkpoint_when_model_skips_narration(
     )
 
     from agent_window.agent.loop import run_agent_loop
+    from agent_window.core.loop_config import LoopConfig
 
     async def collect_events() -> list[dict]:
         events: list[dict] = []
         async for ev in run_agent_loop(
             [{"role": "user", "content": "explore"}],
             goal="explore",
+            config=LoopConfig.default().with_goal_mode(True),
         ):
             events.append(ev)
         return events

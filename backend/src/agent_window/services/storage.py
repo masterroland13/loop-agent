@@ -22,6 +22,19 @@ def ensure_user_data_dir(user_id: str = settings.default_user_id) -> Path:
     return data_dir
 
 
+def _snapshot_active_model() -> tuple[Optional[str], Optional[str]]:
+    """Copy the global active profile onto a new session. Failures leave both empty."""
+    try:
+        from agent_window.services.model_registry import resolve_active_handle
+
+        handle = resolve_active_handle()
+    except Exception:
+        return None, None
+    if handle is None:
+        return None, None
+    return handle.profile_id, handle.model_id
+
+
 def create_session(
     db: Session,
     title: str,
@@ -34,6 +47,7 @@ def create_session(
     session_path.mkdir(parents=True, exist_ok=True)
 
     root = (workspace_root or "").strip() or None
+    profile_id, model_id = _snapshot_active_model()
 
     session = SessionModel(
         id=session_id,
@@ -41,6 +55,8 @@ def create_session(
         title=title,
         data_path=str(session_path.relative_to(Path(settings.app_data_dir))),
         workspace_root=root,
+        profile_id=profile_id,
+        model_id=model_id,
     )
     db.add(session)
     db.commit()
@@ -132,6 +148,41 @@ def update_session_title(db: Session, session: SessionModel, title: str) -> Sess
     return session
 
 
+def update_session_goal_mode(db: Session, session: SessionModel, enabled: bool) -> SessionModel:
+    session.goal_mode = bool(enabled)
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def update_session_pinned_goal(
+    db: Session, session: SessionModel, pinned_goal: str | None
+) -> SessionModel:
+    session.pinned_goal = pinned_goal
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def update_session_workspace_root(
+    db: Session, session: SessionModel, workspace_root: str
+) -> SessionModel:
+    """Bind an unbound session to a folder. Does not support clear/rebind."""
+    root = (workspace_root or "").strip()
+    if not root:
+        raise ValueError("workspace_root required")
+    existing = (session.workspace_root or "").strip()
+    if existing:
+        raise ValueError("session already bound")
+    session.workspace_root = root
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
 def add_message(
     db: Session,
     session: SessionModel,
@@ -142,6 +193,9 @@ def add_message(
     summary: str = "",
     trace: str = "[]",
     attachments: str = "[]",
+    parent_id: str | None = None,
+    entry_type: str = "message",
+    update_leaf: bool = True,
 ) -> Message:
     message = Message(
         session_id=session.id,
@@ -151,14 +205,28 @@ def add_message(
         summary=summary,
         trace=trace,
         attachments=attachments,
+        parent_id=parent_id,
+        entry_type=entry_type or "message",
     )
     db.add(message)
     db.commit()
     db.refresh(message)
     append_message_to_markdown(session, message)
     session.updated_at = datetime.utcnow()
+    if role == Role.USER and (entry_type or "message") == "message":
+        session.last_prompt_at = message.created_at or session.updated_at
+    if update_leaf:
+        session.leaf_id = message.id
     db.commit()
     return message
+
+
+def set_session_leaf(db: Session, session: SessionModel, leaf_id: str | None) -> SessionModel:
+    session.leaf_id = leaf_id
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 def delete_session(db: Session, session: SessionModel) -> None:

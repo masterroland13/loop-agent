@@ -53,6 +53,10 @@ class TurnTraceWriter:
     def assistant_id(self) -> str:
         return self.assistant.id
 
+    def spill(self, text: str) -> str:
+        """Public spill for F4 observe_spill / F6 TurnEvent (same blob seq)."""
+        return self._spill(text)
+
     def _spill(self, text: str) -> str:
         self._blob_seq += 1
         return write_turn_blob(self.session, self.assistant.id, self._blob_seq, text)

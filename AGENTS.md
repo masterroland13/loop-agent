@@ -1,6 +1,32 @@
-# Hal Agent 项目工作规则
+# Loop Agent 项目工作规则
 
-> 本文件会被注入系统提示（AGENTS.md 分层加载）。写给在本仓库工作的 Agent。
+> 本文件会被注入系统提示（AGENTS.md 分层加载）。写给在本仓库工作的 Agent。  
+> **产品名：** Loop Agent。对用户介绍自己或称呼本产品时只说 Loop Agent。
+
+## 架构与文档权威
+
+- **地图：** [`docs/README.md`](docs/README.md)（docs 分层索引）。  
+- **架构真源：** [`docs/architecture-charter.md`](docs/architecture-charter.md)（分层、Goal 模式、Preset、可进化记忆 §3.5、A0–A4）。  
+- **交付阶段：** [`docs/agent-window-roadmap.md`](docs/agent-window-roadmap.md)。  
+- **进度 Living：** [`docs/foundation-status.md`](docs/foundation-status.md)（A0–A4 + 收编表）。  
+- **分层边界：** [`docs/layer-boundaries.md`](docs/layer-boundaries.md)（import 方向；`tests/test_layer_boundaries.py`）。  
+- 与宪章冲突时以宪章为准；勿按旧 F1–F9 清单开新旁路焊进 `loop.py`。
+
+## 文档分层（L0–L3）
+
+| 层 | 放什么 | 位置 |
+|----|--------|------|
+| **L0** | Agent 运行时薄指令 | 根 `AGENTS.md`；可选子树 `AGENTS.md`；`skills/*/SKILL.md`（仅 catalog 注入） |
+| **L1** | 权威真源 | `docs/architecture-charter.md`、`layer-boundaries.md`、`agent-window-roadmap.md`；根 `README.md` / `CHANGELOG.md` |
+| **L2** | Living / 进行中 | **唯一**进度：`docs/foundation-status.md`；可选 `docs/plans/`、`docs/adr/` |
+| **L3** | 档案与参考（默认不注入） | `docs/design/`、`docs/archive/`、`docs/research/`、`docs/dogfood/` |
+
+**规则：**
+
+1. **冲突序：** 宪章 > 路线图 > foundation-status > 其余 docs。  
+2. **禁止**在 `docs/` 根再堆无索引长文；新调研 → `research/`，冻结方案 → `archive/`，狗粮 → `dogfood/`，定稿设计 → `design/`。  
+3. Living 进度只维护 `foundation-status.md`；勿改 `archive/` 当进度源。  
+4. 根目录不放临时脚本/报告；运维与调试进 `scripts/`（见 `scripts/README.md`）。
 
 ## 测试纪律
 
@@ -23,7 +49,7 @@
 - commit message 用英文短句概括 why，例如 `hunk-level partial apply: per-block checkboxes in DiffPanel + apply-partial API`。
 - 仓库未配 git 身份，用一次性参数：`git -c user.name=caapap -c user.email=caapap@localhost commit`。
 - 每次提交前往 `CHANGELOG.md` 的 `[Unreleased]` 加条目。
-- **Foundation 进度**：改动 F1–F9 或 §0.4 相关行为时，同步更新 [`docs/foundation-status.md`](docs/foundation-status.md)（进度、占比、backlog、§0.4 勾选）；方案/三档定义改 [`docs/foundation-f4-f6-plan.md`](docs/foundation-f4-f6-plan.md)。
+- **架构进度**：改动 A0–A4、Goal 模式、Preset、或旧 F 项收编行为时，同步更新 [`docs/foundation-status.md`](docs/foundation-status.md)；战略阶段变更改 [`docs/agent-window-roadmap.md`](docs/agent-window-roadmap.md)；分层/原语变更改 [`docs/architecture-charter.md`](docs/architecture-charter.md)。
 
 ## 模型行为防线
 
@@ -35,5 +61,5 @@
 
 - 后端：`backend/.venv`，`PYTHONPATH=src uvicorn agent_window.main:app --port 8000`
 - 前端：`npm run dev -- --host 0.0.0.0 --port 5173`
-- CLI：激活 venv 后 `hal`（ask / status / approve / reject / run --wait）
+- CLI：激活 venv 后 `loop`（ask / status / approve / reject / run --wait）
 - 路径含空格，所有 shell 命令里路径必须加引号。

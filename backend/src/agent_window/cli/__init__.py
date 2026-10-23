@@ -1,4 +1,4 @@
-"""Hal Agent CLI."""
+"""Loop Agent CLI."""
 
 from agent_window.cli.main import main
 

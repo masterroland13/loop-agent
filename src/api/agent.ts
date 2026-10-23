@@ -1,4 +1,17 @@
+import { translate, type Locale } from '../i18n'
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
+
+let apiErrorLocale: Locale = 'zh'
+
+/** Sync UI language so HTTP error fallbacks match the active locale. */
+export function setApiErrorLocale(locale: Locale) {
+  apiErrorLocale = locale
+}
+
+export function getApiErrorLocale(): Locale {
+  return apiErrorLocale
+}
 
 export interface Session {
   id: string
@@ -6,6 +19,14 @@ export interface Session {
   created_at: string
   updated_at: string
   workspace_root?: string | null
+  goal_mode?: boolean
+  pinned_goal?: string | null
+  leaf_id?: string | null
+  profile_id?: string | null
+  model_id?: string | null
+  title_locked?: boolean
+  /** Time of the latest user instruction. Replies do not move this. */
+  last_prompt_at?: string | null
 }
 
 export interface CreateSessionRequest {
@@ -41,6 +62,8 @@ export interface ApiMessage {
   trace?: Array<Record<string, unknown>>
   attachments?: AttachmentMeta[]
   created_at: string
+  parent_id?: string | null
+  entry_type?: string
 }
 
 export interface TurnMeta {
@@ -94,6 +117,8 @@ export interface StreamEvent {
   memory_id?: string
   mode?: string
   preview?: string
+  target?: string
+  op_summary?: string
   model?: string
   elapsed_ms?: number
   approx_prompt_tokens?: number
@@ -101,11 +126,20 @@ export interface StreamEvent {
   compressed?: boolean
   memory_injected?: boolean
   goal?: string
+  model_fallback?: boolean
+  profile_id?: string | null
   previous_goal?: string
   tools_since_last?: number
   reason?: string
   reply?: string
   settled?: boolean
+  max_tool_iters?: number
+  tools_ran?: number
+  /** S1 Thought channel */
+  phase?: string
+  text?: string
+  duration_ms?: number
+  source?: string
 }
 
 export interface AgentSettings {
@@ -117,6 +151,10 @@ export interface AgentSettings {
   disabled_tools: string[]
   max_tool_iters: number
   checkpoint_every_n_tools: number
+  exploration_repeat_threshold: number
+  loop_preset: 'yolo' | 'trusted' | 'strict'
+  user_md_char_limit?: number
+  memory_md_char_limit?: number
 }
 
 export interface MemoryProposal {
@@ -124,8 +162,10 @@ export interface MemoryProposal {
   mode: string
   preview: string
   content: string
+  target?: 'user' | 'memory'
   status: string
   error?: string | null
+  op_summary?: string
 }
 
 export interface AuditEvent {
@@ -144,6 +184,13 @@ export interface AssetsStatus {
   user_md_exists: boolean
   user_md_path: string
   user_md_size: number
+  memory_md_exists?: boolean
+  memory_md_path?: string
+  memory_md_size?: number
+  user_md_chars?: number
+  user_md_limit?: number
+  memory_md_chars?: number
+  memory_md_limit?: number
   workspace_configured: boolean
   workspace_root?: string | null
   settings: AgentSettings
@@ -166,6 +213,20 @@ function formatApiError(status: number, body: string): string {
     const parsed = JSON.parse(body) as { detail?: unknown }
     const detail = parsed.detail
     if (typeof detail === 'string') return detail
+    if (Array.isArray(detail) && detail.length > 0) {
+      const parts = detail
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null
+          const msg = (item as { msg?: unknown }).msg
+          return typeof msg === 'string' ? msg : null
+        })
+        .filter((m): m is string => Boolean(m))
+      if (parts.length > 0) {
+        return parts
+          .map((m) => m.replace(/^Value error,\s*/i, ''))
+          .join('; ')
+      }
+    }
     if (detail && typeof detail === 'object' && 'message' in detail) {
       const msg = (detail as { message?: unknown }).message
       if (typeof msg === 'string' && msg.trim()) return msg
@@ -173,8 +234,12 @@ function formatApiError(status: number, body: string): string {
   } catch {
     // ignore
   }
-  if (status === 409) return '该会话正在处理中，请稍候或先停止当前回复'
-  return body || `Request failed: ${status}`
+  if (status === 409) return translate(apiErrorLocale, 'errors.sessionBusy')
+  if (status === 400) return translate(apiErrorLocale, 'errors.invalidRequest')
+  return (
+    body.slice(0, 160) ||
+    translate(apiErrorLocale, 'errors.requestFailedWithStatus', { status })
+  )
 }
 
 async function apiFetch(input: string, init?: RequestInit) {
@@ -223,27 +288,95 @@ export async function listSessions(): Promise<Session[]> {
   return response.json()
 }
 
+export async function getSession(sessionId: string): Promise<Session> {
+  const response = await apiFetch(`/api/sessions/${sessionId}`)
+  return response.json()
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
 }
 
-export async function getMessages(sessionId: string): Promise<ApiMessage[]> {
-  const response = await apiFetch(`/api/sessions/${sessionId}/messages`)
+export async function getMessages(
+  sessionId: string,
+  opts?: { view?: 'all' | 'active' },
+): Promise<ApiMessage[]> {
+  const view = opts?.view ?? 'all'
+  const qs = view === 'all' ? '' : `?view=${encodeURIComponent(view)}`
+  const response = await apiFetch(`/api/sessions/${sessionId}/messages${qs}`)
   return response.json()
 }
 
-/** Fetch oversized tool payload spilled under session.data_path (file: ref). */
-export async function getSessionBlob(sessionId: string, fileRef: string): Promise<string> {
-  const qs = new URLSearchParams({ ref: fileRef })
-  const response = await apiFetch(`/api/sessions/${sessionId}/blobs?${qs.toString()}`)
-  return response.text()
-}
-
-export async function updateSessionTitle(sessionId: string, title: string): Promise<Session> {
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string,
+  titleLocked = false,
+): Promise<Session> {
   const response = await apiFetch(`/api/sessions/${sessionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(titleLocked ? { title, title_locked: true } : { title }),
+  })
+  return response.json()
+}
+
+export async function updateSessionGoalMode(
+  sessionId: string,
+  goalMode: boolean,
+): Promise<Session> {
+  const response = await apiFetch(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ goal_mode: goalMode }),
+  })
+  return response.json()
+}
+
+export async function updateSessionModel(
+  sessionId: string,
+  patch: { model_id?: string | null; profile_id?: string | null },
+): Promise<Session> {
+  const response = await apiFetch(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return response.json()
+}
+
+export interface ProviderPreset {
+  id: string
+  label: string
+  base_url: string
+  model_id: string
+  inherit_base_url: boolean
+}
+
+export async function fetchProviderPresets(): Promise<ProviderPreset[]> {
+  const response = await apiFetch('/api/model-profile-presets')
+  return response.json()
+}
+
+export async function updateSessionPinnedGoal(
+  sessionId: string,
+  pinnedGoal: string | null,
+): Promise<Session> {
+  const response = await apiFetch(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned_goal: pinnedGoal }),
+  })
+  return response.json()
+}
+
+export async function updateSessionWorkspaceRoot(
+  sessionId: string,
+  workspaceRoot: string,
+): Promise<Session> {
+  const response = await apiFetch(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_root: workspaceRoot }),
   })
   return response.json()
 }
@@ -287,6 +420,128 @@ export async function browseWorkspace(path?: string): Promise<WorkspaceBrowse> {
   return response.json()
 }
 
+export interface WorkspaceFileEntry {
+  name: string
+  path: string
+  type: 'file' | 'dir' | string
+  size?: number | null
+}
+
+export interface WorkspaceFilesList {
+  path: string
+  entries: WorkspaceFileEntry[]
+  truncated: boolean
+}
+
+export type WorkspaceFileEncoding = 'utf-8' | 'docx-html'
+
+export interface WorkspaceFileRead {
+  path: string
+  content: string
+  /** Decimal string — JSON numbers cannot represent ns timestamps in JS. */
+  mtime_ns: string
+  size: number
+  encoding: WorkspaceFileEncoding
+}
+
+export interface WorkspaceFileWriteResult {
+  path: string
+  mtime_ns: string
+  size: number
+}
+
+export async function listWorkspaceFiles(path = '.'): Promise<WorkspaceFilesList> {
+  const qs = `?path=${encodeURIComponent(path)}`
+  const response = await apiFetch(`/api/workspace/files/list${qs}`)
+  return response.json()
+}
+
+export async function readWorkspaceFile(path: string): Promise<WorkspaceFileRead> {
+  const qs = `?path=${encodeURIComponent(path)}`
+  const response = await apiFetch(`/api/workspace/files/read${qs}`)
+  return response.json()
+}
+
+export async function writeWorkspaceFile(
+  path: string,
+  content: string,
+  ifMatchMtimeNs?: string | null,
+  ifMatchBaseContent?: string | null,
+  encoding: WorkspaceFileEncoding = 'utf-8',
+): Promise<WorkspaceFileWriteResult> {
+  const response = await apiFetch('/api/workspace/files/write', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      path,
+      content,
+      if_match_mtime_ns: ifMatchMtimeNs ?? null,
+      if_match_base_content: ifMatchBaseContent ?? null,
+      encoding,
+    }),
+  })
+  return response.json()
+}
+
+export async function mkdirWorkspaceDirectory(path: string): Promise<{ path: string }> {
+  const response = await apiFetch('/api/workspace/files/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  return response.json()
+}
+
+export async function renameWorkspaceEntry(
+  fromPath: string,
+  toPath: string,
+): Promise<{ from: string; path: string }> {
+  const response = await apiFetch('/api/workspace/files/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: fromPath, to: toPath }),
+  })
+  return response.json()
+}
+
+export async function deleteWorkspaceEntry(
+  path: string,
+  recursive = false,
+): Promise<{ path: string; recursive: boolean }> {
+  const qs = `?path=${encodeURIComponent(path)}&recursive=${recursive ? 'true' : 'false'}`
+  const response = await apiFetch(`/api/workspace/files/delete${qs}`, { method: 'DELETE' })
+  return response.json()
+}
+
+export async function copyWorkspaceEntry(
+  fromPath: string,
+  toPath: string,
+): Promise<{ from: string; path: string }> {
+  const response = await apiFetch('/api/workspace/files/copy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: fromPath, to: toPath }),
+  })
+  return response.json()
+}
+
+export async function fetchWorkspaceTreeStats(
+  path: string,
+): Promise<{ path: string; file_count: number; dir_count: number }> {
+  const qs = `?path=${encodeURIComponent(path)}`
+  const response = await apiFetch(`/api/workspace/files/stats${qs}`)
+  return response.json()
+}
+
+export async function revealWorkspaceEntry(path: string): Promise<{ path: string; revealed: string }> {
+  const response = await apiFetch('/api/workspace/files/reveal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  return response.json()
+}
+
 export interface PatchResponse {
   id: string
   path: string
@@ -297,10 +552,12 @@ export interface PatchResponse {
   error?: string | null
   hunk_count?: number | null
   applied_hunks?: number[] | null
+  session_id?: string | null
 }
 
-export async function listPatches(): Promise<PatchResponse[]> {
-  const response = await apiFetch('/api/workspace/patches')
+export async function listPatches(sessionId?: string | null): Promise<PatchResponse[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const response = await apiFetch(`/api/workspace/patches${qs}`)
   return response.json()
 }
 
@@ -339,10 +596,12 @@ export interface ShellResponse {
   stderr?: string
   truncated?: boolean
   error?: string | null
+  session_id?: string | null
 }
 
-export async function listShells(): Promise<ShellResponse[]> {
-  const response = await apiFetch('/api/workspace/shells')
+export async function listShells(sessionId?: string | null): Promise<ShellResponse[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const response = await apiFetch(`/api/workspace/shells${qs}`)
   return response.json()
 }
 
@@ -368,8 +627,10 @@ export async function fetchAgentSettings(): Promise<AgentSettings> {
 
 export async function updateAgentSettings(
   patch: Partial<AgentSettings>,
+  sessionId?: string,
 ): Promise<AgentSettings> {
-  const response = await apiFetch('/api/settings', {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const response = await apiFetch(`/api/settings${qs}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -417,6 +678,101 @@ export async function testLlmConnection(): Promise<LlmTestResult> {
   return response.json()
 }
 
+export interface ModelProfile {
+  id: string
+  label: string
+  enabled: boolean
+  base_url: string
+  model_id: string
+  api: string
+  api_key_configured: boolean
+  supports_reasoning?: boolean
+  reasoning_mode?: string
+}
+
+export interface ModelProfilesList {
+  active_id: string
+  temperature: number
+  max_tokens: number
+  profiles: ModelProfile[]
+}
+
+export async function fetchModelProfiles(): Promise<ModelProfilesList> {
+  const response = await apiFetch('/api/model-profiles')
+  return response.json()
+}
+
+export async function createModelProfile(body: {
+  label?: string
+  base_url?: string
+  api_key?: string
+  model_id?: string
+  enabled?: boolean
+  activate?: boolean
+}): Promise<ModelProfile> {
+  const response = await apiFetch('/api/model-profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return response.json()
+}
+
+export async function updateModelProfile(
+  id: string,
+  patch: {
+    label?: string
+    base_url?: string
+    api_key?: string
+    model_id?: string
+    enabled?: boolean
+    temperature?: number
+    max_tokens?: number
+    supports_reasoning?: boolean
+    reasoning_mode?: string
+  },
+): Promise<ModelProfilesList> {
+  const response = await apiFetch(`/api/model-profiles/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return response.json()
+}
+
+export async function deleteModelProfile(id: string): Promise<ModelProfilesList> {
+  const response = await apiFetch(`/api/model-profiles/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  return response.json()
+}
+
+export async function activateModelProfile(id: string): Promise<ModelProfilesList> {
+  const response = await apiFetch(`/api/model-profiles/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+  })
+  return response.json()
+}
+
+export async function updateModelGlobals(patch: {
+  temperature?: number
+  max_tokens?: number
+}): Promise<ModelProfilesList> {
+  const response = await apiFetch('/api/model-profiles/globals', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return response.json()
+}
+
+export async function testModelProfile(id: string): Promise<LlmTestResult> {
+  const response = await apiFetch(`/api/model-profiles/${encodeURIComponent(id)}/test`, {
+    method: 'POST',
+  })
+  return response.json()
+}
+
 export interface ToolInfo {
   name: string
   description: string
@@ -435,24 +791,46 @@ export async function fetchTools(): Promise<ToolsResponse> {
 export interface MemoryContent {
   content: string
   path: string
+  target?: 'user' | 'memory'
+  chars?: number
+  limit?: number
 }
 
-export async function fetchMemoryContent(): Promise<MemoryContent> {
-  const response = await apiFetch('/api/memory/content')
-  return response.json()
+export async function fetchMemoryContent(target: 'user' | 'memory' = 'user'): Promise<MemoryContent> {
+  const response = await apiFetch(`/api/memory/tracks/${encodeURIComponent(target)}/content`)
+  const data = (await response.json()) as MemoryContent
+  const expected = target === 'memory' ? 'MEMORY.md' : 'USER.md'
+  const path = (data.path || '').replace(/\\/g, '/')
+  if (data.target && data.target !== target) {
+    throw new Error(`记忆轨错位：请求 ${target}，响应 target=${data.target}`)
+  }
+  if (!path.endsWith(expected)) {
+    throw new Error(`记忆路径错位：请求 ${target}，得到 ${data.path || '(empty)'}（后端可能未重启）`)
+  }
+  return data
 }
 
-export async function updateMemoryContent(content: string): Promise<MemoryContent> {
-  const response = await apiFetch('/api/memory/content', {
+export async function updateMemoryContent(
+  content: string,
+  target: 'user' | 'memory' = 'user',
+): Promise<MemoryContent> {
+  const response = await apiFetch(`/api/memory/tracks/${encodeURIComponent(target)}/content`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, target }),
   })
-  return response.json()
+  const data = (await response.json()) as MemoryContent
+  const expected = target === 'memory' ? 'MEMORY.md' : 'USER.md'
+  const path = (data.path || '').replace(/\\/g, '/')
+  if (!path.endsWith(expected)) {
+    throw new Error(`保存后路径错位：期望 ${expected}，得到 ${data.path || '(empty)'}（后端可能未重启）`)
+  }
+  return data
 }
 
-export async function listMemoryProposals(): Promise<MemoryProposal[]> {
-  const response = await apiFetch('/api/memory/proposals')
+export async function listMemoryProposals(sessionId?: string | null): Promise<MemoryProposal[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  const response = await apiFetch(`/api/memory/proposals${qs}`)
   return response.json()
 }
 
@@ -568,7 +946,6 @@ export async function cancelSession(sessionId: string): Promise<{ ok: boolean; c
   return response.json()
 }
 
-
 export function attachmentDownloadUrl(sessionId: string, attachmentId: string): string {
   return `${API_BASE_URL}/api/sessions/${sessionId}/attachments/${attachmentId}`
 }
@@ -628,9 +1005,11 @@ function startSseStream(
   body: Record<string, unknown>,
   onEvent: (event: StreamEvent) => void,
   onError: (error: Error) => void,
-  sessionId?: string,
+  /** Session this stream belongs to (cancel is caller's job — see Stop). */
+  _sessionId?: string,
 ): () => void {
   const controller = new AbortController()
+  void _sessionId
 
   const start = async () => {
     let gotTerminal = false
@@ -682,14 +1061,22 @@ function startSseStream(
           }
 
           if (currentEventType && eventData) {
+            // Ignore stray error events after a successful terminal `done`.
+            if (gotTerminal && currentEventType === 'error') {
+              continue
+            }
             try {
-              const parsed = JSON.parse(eventData)
-              const evt = { type: currentEventType, ...parsed }
+              const parsed = JSON.parse(eventData) as Record<string, unknown>
+              // SSE event line is authoritative; JSON `type` is metadata only.
+              const evt = { ...parsed, type: currentEventType } as StreamEvent
               if (currentEventType === 'done' || currentEventType === 'error') {
                 gotTerminal = true
               }
               onEvent(evt)
             } catch {
+              if (currentEventType === 'error') {
+                gotTerminal = true
+              }
               onEvent({ type: currentEventType, content: eventData })
             }
           }
@@ -710,11 +1097,9 @@ function startSseStream(
   }
 
   start()
+  // Detach only: abort the fetch. Backend `_sse_detach_producer` keeps the turn running.
+  // Callers that must stop the agent must `cancelSession` themselves (e.g. Stop button).
   return () => {
-    // Prefer cancel before abort so the agent loop can exit wait_for_* cleanly.
-    if (sessionId) {
-      void cancelSession(sessionId)
-    }
     controller.abort()
   }
 }

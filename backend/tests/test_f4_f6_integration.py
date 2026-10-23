@@ -53,6 +53,7 @@ def test_f4_loop_slim_in_working_full_in_sse(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     chat_calls: list[list[dict]] = []
+    spills: list[str] = []
 
     async def fake_chat(working, tools=None, model=None):
         chat_calls.append(list(working))
@@ -71,6 +72,8 @@ def test_f4_loop_slim_in_working_full_in_sse(monkeypatch: pytest.MonkeyPatch) ->
         assert slim["path"] == "src/huge.py"
         assert slim.get("truncated") is True
         assert "hint" in slim
+        assert slim.get("full_ref") == "file:turns/t/e1.txt"
+        assert "完整输出已落盘" in slim["hint"]
         return {"content": "已读文件。", "tool_calls": []}
 
     async def fake_handle(name: str, arguments) -> str:
@@ -85,10 +88,21 @@ def test_f4_loop_slim_in_working_full_in_sse(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     from agent_window.agent.loop import run_agent_loop
+    from agent_window.agent.turn_event import INLINE_FULL_MAX
+    from agent_window.core.loop_config import LoopConfig
+    from agent_window.core.tool_hooks import with_observe_spill
+
+    # Force spill path: body must exceed INLINE_FULL_MAX.
+    assert len(full_result) > INLINE_FULL_MAX
+
+    def spill(text: str) -> str:
+        spills.append(text)
+        return "file:turns/t/e1.txt"
 
     async def _run() -> list[dict]:
         events: list[dict] = []
-        async for ev in run_agent_loop([{"role": "user", "content": "读大文件"}]):
+        cfg = with_observe_spill(LoopConfig.default(), spill)
+        async for ev in run_agent_loop([{"role": "user", "content": "读大文件"}], config=cfg):
             events.append(ev)
         return events
 
@@ -96,6 +110,9 @@ def test_f4_loop_slim_in_working_full_in_sse(monkeypatch: pytest.MonkeyPatch) ->
     tool_results = [e for e in events if e.get("type") == "tool_result" and e.get("name") == "read_file"]
     assert len(tool_results) == 1
     assert tool_results[0]["content"] == full_result
+    assert tool_results[0].get("full_ref") == "file:turns/t/e1.txt"
+    assert tool_results[0].get("truncated") is True
+    assert spills == [full_result]
     assert len(tool_results[0]["content"]) > len(json.loads(chat_calls[1][-1]["content"]))
     assert any(e.get("type") == "done" for e in events)
 

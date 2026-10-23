@@ -9,7 +9,7 @@ if [ -n "$pids" ]; then
   kill $pids || true
   sleep 1
 fi
-nohup .venv/bin/uvicorn agent_window.main:app --host 0.0.0.0 --port 8000 > /tmp/hal-agent-api.log 2>&1 &
+nohup .venv/bin/uvicorn agent_window.main:app --host 0.0.0.0 --port 8000 > /tmp/loop-agent-api.log 2>&1 &
 sleep 2
 curl -s http://127.0.0.1:8000/health
 echo

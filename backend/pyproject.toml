@@ -1,7 +1,7 @@
 [project]
-name = "hal-agent-backend"
+name = "loop-agent-backend"
 version = "0.1.0"
-description = "Backend for Hal Agent: a self-growing agent chat window"
+description = "Backend for Loop Agent: a self-growing agent chat window"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
@@ -13,6 +13,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "aiofiles>=24.1.0",
     "python-multipart>=0.0.9",
+    "mammoth>=1.8.0",
+    "python-docx>=1.1.2",
+    "htmldocx>=0.0.6",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +26,7 @@ dev = [
 ]
 
 [project.scripts]
-hal = "agent_window.cli.main:main"
+loop = "agent_window.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]

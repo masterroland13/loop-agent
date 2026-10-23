@@ -32,6 +32,7 @@ def att_env(tmp_path, monkeypatch):
     from agent_window.services.provider import provider
 
     monkeypatch.setattr(provider, "is_available", lambda: True)
+    monkeypatch.setattr(provider, "profile_is_ready", lambda _profile_id=None: True)
 
     client = TestClient(app)
     sid = client.post("/api/sessions", json={"title": "att"}).json()["id"]

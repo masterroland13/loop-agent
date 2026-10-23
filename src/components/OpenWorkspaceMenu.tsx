@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { Project } from '../hooks/useWorkspaces'
+import { useT } from '../i18n'
 
 interface OpenWorkspaceMenuProps {
   open: boolean
@@ -20,6 +21,7 @@ export function OpenWorkspaceMenu({
   onSelectRecent,
   onBrowseThisPc,
 }: OpenWorkspaceMenuProps) {
+  const t = useT()
   const panelRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -79,7 +81,7 @@ export function OpenWorkspaceMenu({
     <div
       ref={panelRef}
       role="dialog"
-      aria-label="Open Workspace"
+      aria-label={t('workspace.openMenuAria')}
       style={{ top: pos.top, left: pos.left }}
       className="fixed z-[60] flex w-[320px] max-h-[min(420px,70vh)] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
     >
@@ -100,17 +102,17 @@ export function OpenWorkspaceMenu({
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search folders, repos..."
+            placeholder={t('workspace.searchFoldersPlaceholder')}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--text-h)] outline-none placeholder:text-[var(--text-dim)]"
           />
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
-        <SectionLabel>Recents</SectionLabel>
+        <SectionLabel>{t('workspace.recents')}</SectionLabel>
         {filtered.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-[var(--text-dim)]">
-            {query.trim() ? '无匹配结果' : '暂无最近工作区'}
+            {query.trim() ? t('workspace.noMatch') : t('workspace.noRecents')}
           </p>
         ) : (
           filtered.map((p) => (
@@ -127,10 +129,10 @@ export function OpenWorkspaceMenu({
           ))
         )}
 
-        <SectionLabel className="mt-2">Repos</SectionLabel>
+        <SectionLabel className="mt-2">{t('workspace.repos')}</SectionLabel>
         <MenuRow
           icon={<MonitorIcon />}
-          label="On This PC"
+          label={t('workspace.onThisPc')}
           chevron
           onClick={() => {
             onClose()
@@ -139,7 +141,7 @@ export function OpenWorkspaceMenu({
         />
         <MenuRow
           icon={<FolderOutlineIcon />}
-          label="Use Existing..."
+          label={t('workspace.useExisting')}
           chevron
           onClick={() => {
             onClose()

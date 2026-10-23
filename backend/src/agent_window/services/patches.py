@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_window.config import settings
+from agent_window.services.attachment_context import get_turn_session_id
 from agent_window.services.session_turns import wait_or_cancel
 from agent_window.services.workspace import WorkspaceError, require_root, resolve_in_workspace
 
@@ -69,6 +70,7 @@ class PendingPatch:
     event: asyncio.Event = field(default_factory=asyncio.Event)
     decision: Optional[str] = None  # apply | reject | timeout | cancelled
     applied_hunks: Optional[List[int]] = None  # set after partial apply
+    session_id: Optional[str] = None
 
 
 _patches: Dict[str, PendingPatch] = {}
@@ -97,6 +99,7 @@ def _save_patches() -> None:
                 "error": p.error,
                 "created_at": p.created_at,
                 "decision": p.decision,
+                "session_id": p.session_id,
             }
         )
     path = _persist_path()
@@ -142,6 +145,7 @@ def load_persisted_patches() -> int:
             error=item.get("error"),
             created_at=float(item.get("created_at") or time.time()),
             decision=item.get("decision"),
+            session_id=(str(item["session_id"]) if item.get("session_id") else None),
         )
         _patches[patch.id] = patch
         count += 1
@@ -221,6 +225,7 @@ def create_patch_from_replace(
         new_content=new_content,
         unified_diff=build_unified_diff(rel_path, old_content, new_content),
         is_new_file=is_new,
+        session_id=get_turn_session_id(),
     )
     _patches[patch.id] = patch
     _save_patches()
@@ -260,6 +265,7 @@ def create_patch_from_content(path: str, content: str) -> PendingPatch:
         new_content=new_content,
         unified_diff=build_unified_diff(rel_path, old_content, new_content),
         is_new_file=is_new,
+        session_id=get_turn_session_id(),
     )
     _patches[patch.id] = patch
     _save_patches()
@@ -304,6 +310,7 @@ def create_patch_for_delete(path: str) -> PendingPatch:
         unified_diff=unified,
         is_new_file=False,
         is_delete=True,
+        session_id=get_turn_session_id(),
     )
     _patches[patch.id] = patch
     _save_patches()
@@ -323,6 +330,7 @@ def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
         "is_delete": patch.is_delete,
         "status": patch.status.value,
         "error": patch.error,
+        "session_id": patch.session_id,
     }
     if patch.applied_hunks is not None:
         result["applied_hunks"] = patch.applied_hunks
@@ -332,20 +340,33 @@ def patch_to_public(patch: PendingPatch) -> Dict[str, Any]:
     return result
 
 
-def list_pending() -> List[Dict[str, Any]]:
-    """Pending patches only (decided history lives in the session stream)."""
-    return [
-        patch_to_public(p)
-        for p in _patches.values()
-        if p.status in LISTABLE_STATUSES
-    ]
+def list_pending(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Pending patches only (decided history lives in the session stream).
+
+    When ``session_id`` is set, only that session's proposals are returned.
+    """
+    sid = (session_id or "").strip() or None
+    out: List[Dict[str, Any]] = []
+    for p in _patches.values():
+        if p.status not in LISTABLE_STATUSES:
+            continue
+        if sid is not None and (p.session_id or "") != sid:
+            continue
+        out.append(patch_to_public(p))
+    return out
 
 
-def cancel_pending_patches() -> int:
-    """Mark all pending patches cancelled and wake waiters. Returns count."""
+def cancel_pending_patches(session_id: Optional[str] = None) -> int:
+    """Cancel pending patches. If ``session_id`` is set, only that session.
+
+    Returns count cancelled.
+    """
+    sid = (session_id or "").strip() or None
     n = 0
     for patch in _patches.values():
         if patch.status != PatchStatus.PENDING:
+            continue
+        if sid is not None and (patch.session_id or "") != sid:
             continue
         patch.status = PatchStatus.CANCELLED
         patch.decision = "cancelled"

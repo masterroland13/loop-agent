@@ -8,7 +8,7 @@ from agent_window.agent.goal import clip_goal
 
 CHECKPOINT_MARKER = "【进度检查点】"
 
-CheckpointReason = Literal["interval", "gate"]
+CheckpointReason = Literal["interval", "gate", "exploration"]
 
 
 def checkpoint_interval_from_settings(raw: object, *, default: int = 4) -> int:

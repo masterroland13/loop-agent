@@ -1,4 +1,4 @@
-"""Shell tools — propose only; execution happens after user approval in the agent loop."""
+"""Shell tools — prepare only; settle/run is tool_pipeline before_tool_call (Gate Step 3)."""
 
 from __future__ import annotations
 

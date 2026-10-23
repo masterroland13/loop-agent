@@ -11,6 +11,7 @@ from agent_window.agent.goal import (
     format_goal_block,
     goals_equal,
     inject_goal_into_messages,
+    is_exploratory_filler,
     is_low_info_followup,
     previous_turn_goal_from_messages,
 )
@@ -43,6 +44,29 @@ def test_continuation_prefix_inherits_prior_goal() -> None:
 def test_substantive_message_becomes_goal() -> None:
     goal = extract_turn_goal("请列出 backend/src 下的 Python 文件", prior_user_texts=[])
     assert "Python" in goal or "backend" in goal
+
+
+def test_long_filler_inherits_prior_goal() -> None:
+    prior = "运行 python -m pytest tests/ 并解释 ImportError: No module named 'agent_window'"
+    filler = (
+        "StateGraph compiled with nodes: planner, executor, reviewer. "
+        "Channel values include messages, scratchpad, tool_outputs. "
+        "RunnableConfig tags=['langgraph', 'debug'] checkpoint_ns='' thread_id='abc'. "
+        "Last event: on_chain_end output={'messages': [...]} metadata={'langgraph_step': 3}"
+    )
+    assert is_exploratory_filler(filler)
+    goal = extract_turn_goal(filler, prior_user_texts=[prior])
+    assert "pytest" in goal or "ImportError" in goal
+    assert "StateGraph" not in goal
+    assert "LangGraph" not in goal.lower()
+
+
+def test_short_clear_rewrite_changes_goal() -> None:
+    prior = "运行 python -m pytest tests/ 并解释 ImportError"
+    rewrite = "请改 focus 到只跑 test_goal.py"
+    goal = extract_turn_goal(rewrite, prior_user_texts=[prior])
+    assert "test_goal" in goal
+    assert goal != clip_goal(prior)
 
 
 def test_low_info_followup_detection() -> None:

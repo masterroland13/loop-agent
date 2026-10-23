@@ -5,7 +5,7 @@ Skills live under `skills/<skill_id>/`:
   - Fallback to `README.md` for older layouts
 
 Project rules are read from `AGENTS.md` files, layered:
-  1. Global: `~/.config/hal-agent/AGENTS.md`
+  1. Global: `~/.config/loop-agent/AGENTS.md` (falls back to `~/.config/hal-agent/AGENTS.md`)
   2. Parent directories of workspace root (upward walk)
   3. Workspace root `AGENTS.md` (most specific, wins on conflict)
 
@@ -40,18 +40,24 @@ def agents_md_path() -> Path | None:
     return Path(root) / "AGENTS.md"
 
 
+def global_agents_md_candidates() -> List[Path]:
+    """Global AGENTS.md locations. The first file that exists wins."""
+    home = Path.home() / ".config"
+    return [home / "loop-agent" / "AGENTS.md", home / "hal-agent" / "AGENTS.md"]
+
+
 def agents_md_paths() -> List[Path]:
     """Return AGENTS.md paths from global to most specific.
 
-    Order: global ~/.config/hal-agent/AGENTS.md → parent dirs → workspace root.
+    Order: global ~/.config/loop-agent/AGENTS.md (else hal-agent) → parent dirs → workspace root.
     Only includes paths that exist.
     """
     paths: List[Path] = []
 
-    # Global layer
-    global_path = Path.home() / ".config" / "hal-agent" / "AGENTS.md"
-    if global_path.is_file():
-        paths.append(global_path)
+    for global_path in global_agents_md_candidates():
+        if global_path.is_file():
+            paths.append(global_path)
+            break
 
     root = get_workspace_root()
     if not root:
@@ -231,7 +237,7 @@ def skill_context_blocks() -> List[str]:
     if active:
         lines: List[str] = []
         for skill_id in active:
-            # Only inject name + description, not the full body
+            # Catalog only (id / name / desc) — pull full body via skill tools when needed
             sd = skill_dir()
             if not sd:
                 continue
@@ -243,15 +249,15 @@ def skill_context_blocks() -> List[str]:
                 continue
             meta, _ = loaded
             name = meta.get("name") or skill_id
-            desc = meta.get("description") or ""
-            entry = f"- **{name}** (`{skill_id}`)"
+            desc = (meta.get("description") or "").strip()
             if desc:
-                entry += f": {desc}"
-            entry += f" — load with `read_file` on `skills/{skill_id}/SKILL.md` when needed"
+                entry = f"- {skill_id}: {name} — {desc} (load via tools when needed)"
+            else:
+                entry = f"- {skill_id}: {name} — (load via tools when needed)"
             lines.append(entry)
         if lines:
             blocks.append(
-                "## Available Skills (load on demand with read_file)\n"
+                "## Available Skills (catalog; use skill tools / read_file to load full SKILL.md)\n"
                 + "\n".join(lines)
             )
 

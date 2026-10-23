@@ -17,8 +17,6 @@ const SIDEBAR_COLLAPSED_KEY = 'agent-chat:sidebar-collapsed'
 const SIDEBAR_WIDTH_KEY = 'agent-chat:sidebar-width'
 /** One-shot: pull sessions stranded in 未绑定 after Workspaces rewrite back onto the disk root. */
 const RECLAIM_UNBOUND_KEY = 'agent-chat:reclaim-unbound-v1'
-/** Marks reclaim policy that never sweeps intentional __unbound__ sessions. */
-const RECLAIM_POLICY_V2_KEY = 'agent-chat:reclaim-policy-v2'
 
 /** Legacy keys from the fake 当前工作区/个人项目/团队协作 buckets. */
 const LEGACY_WORKSPACES_KEY = 'agent-chat:workspaces'
@@ -184,42 +182,40 @@ export function useWorkspaces() {
    * - Orphan map entries (proj_* no longer in sidebar) always remapped.
    * - `__unbound__` (and missing map entries) remapped once — Workspaces rewrite left everyone unbound.
    */
-  /**
-   * Remap orphan proj_* session map entries (project id no longer in sidebar) onto the
-   * current disk project. Does NOT reclaim intentional `__unbound__` sessions.
-   * Legacy unbound sweep was one-shot via RECLAIM_UNBOUND_KEY during Workspaces migration;
-   * v2 policy keeps unbound as-is (no auto-undo — intent unknown after aggressive reclaim).
-   */
-  const reclaimOrphanSessionsToProject = useCallback((projectId: string) => {
+  const reclaimSessionsToProject = useCallback((projectId: string, sessionIds: string[] = []) => {
     if (!projectId || projectId === UNBOUND_PROJECT_ID) return
-    try {
-      localStorage.setItem(RECLAIM_POLICY_V2_KEY, '1')
-    } catch {
-      // ignore
-    }
     setSessionProjectMap((prev) => {
+      const mappedToTarget = Object.values(prev).filter((pid) => pid === projectId).length
+      const unboundCount = Object.values(prev).filter((pid) => pid === UNBOUND_PROJECT_ID).length
+      const healEmptyProject =
+        mappedToTarget === 0 &&
+        (unboundCount > 0 ||
+          sessionIds.some((id) => prev[id] == null || prev[id] === UNBOUND_PROJECT_ID))
+      const reclaimUnbound = localStorage.getItem(RECLAIM_UNBOUND_KEY) !== '1' || healEmptyProject
       const known = new Set(loadProjects().map((p) => p.id))
       known.add(projectId)
       let changed = false
       const next = { ...prev }
       for (const [sessionId, pid] of Object.entries(prev)) {
         const orphan = pid !== UNBOUND_PROJECT_ID && !known.has(pid)
-        if (orphan) {
+        const strandedUnbound = reclaimUnbound && pid === UNBOUND_PROJECT_ID
+        if (orphan || strandedUnbound) {
           next[sessionId] = projectId
           changed = true
         }
       }
+      if (reclaimUnbound) {
+        for (const sessionId of sessionIds) {
+          if (next[sessionId] == null || next[sessionId] === UNBOUND_PROJECT_ID) {
+            next[sessionId] = projectId
+            changed = true
+          }
+        }
+        localStorage.setItem(RECLAIM_UNBOUND_KEY, '1')
+      }
       return changed ? next : prev
     })
   }, [])
-
-  /** @deprecated alias — orphan remap only; does not sweep `__unbound__`. */
-  const reclaimSessionsToProject = useCallback(
-    (projectId: string, _sessionIds: string[] = []) => {
-      reclaimOrphanSessionsToProject(projectId)
-    },
-    [reclaimOrphanSessionsToProject],
-  )
 
   const switchProject = useCallback((id: string) => {
     setActiveProjectId(id)
@@ -235,10 +231,15 @@ export function useWorkspaces() {
     [activeProjectId],
   )
 
-  /**
-   * Server truth: sessions with workspace_root map onto projectIdFromRoot.
-   * Null/empty workspace_root left unchanged (legacy / unbound mess).
-   */
+  const removeSessionFromProject = useCallback((sessionId: string) => {
+    setSessionProjectMap((prev) => {
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+  }, [])
+
+  /** Align local session→project map with server `workspace_root` on each sessions refresh. */
   const syncSessionsFromServer = useCallback(
     (sessions: { id: string; workspace_root?: string | null }[]) => {
       setSessionProjectMap((prev) => {
@@ -258,14 +259,6 @@ export function useWorkspaces() {
     },
     [],
   )
-
-  const removeSessionFromProject = useCallback((sessionId: string) => {
-    setSessionProjectMap((prev) => {
-      const next = { ...prev }
-      delete next[sessionId]
-      return next
-    })
-  }, [])
 
   const toggleSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed((prev) => {
@@ -326,11 +319,11 @@ export function useWorkspaces() {
     sidebarWidth,
     sessionProjectMap,
     upsertProjectFromRoot,
-    reclaimOrphanSessionsToProject,
     reclaimSessionsToProject,
+    reclaimOrphanSessionsToProject: reclaimSessionsToProject,
+    syncSessionsFromServer,
     switchProject,
     assignSessionToProject,
-    syncSessionsFromServer,
     removeSessionFromProject,
     toggleSidebarCollapsed,
     setSidebarWidth,

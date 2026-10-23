@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://llm-cn.gameye.ai/v1"
     llm_api_key: str = ""
     llm_model: str = "kimi-k3"
+    # Used when the turn has image attachments and the selected model is not vision-capable.
+    llm_vision_model: str = "deepseek-v4-flash-vision-exp"
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.7
 

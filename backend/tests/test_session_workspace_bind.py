@@ -76,3 +76,57 @@ def test_create_empty_string_workspace_root_is_null(sess_env) -> None:
     assert body["workspace_root"] is None
     assert body["title"] == "empty-root"
     assert body.get("workspace_root") is None
+
+
+def test_patch_bind_workspace_root(sess_env, tmp_path) -> None:
+    client = sess_env.client
+    created = client.post("/api/sessions", json={"title": "to-bind"}).json()
+    sid = created["id"]
+    root = str(tmp_path / "proj")
+    (tmp_path / "proj").mkdir()
+
+    patched = client.patch(
+        f"/api/sessions/{sid}",
+        json={"workspace_root": root},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["workspace_root"] == root
+
+    listed = client.get("/api/sessions").json()
+    match = next(s for s in listed if s["id"] == sid)
+    assert match["workspace_root"] == root
+
+
+def test_patch_bind_rejects_when_already_bound(sess_env, tmp_path) -> None:
+    client = sess_env.client
+    a = str(tmp_path / "a")
+    b = str(tmp_path / "b")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    created = client.post(
+        "/api/sessions",
+        json={"title": "bound", "workspace_root": a},
+    ).json()
+
+    again = client.patch(
+        f"/api/sessions/{created['id']}",
+        json={"workspace_root": b},
+    )
+    assert again.status_code == 400
+    assert created["workspace_root"] == a or client.get(f"/api/sessions/{created['id']}").json()["workspace_root"] == a
+
+
+def test_patch_unbind_rejected(sess_env, tmp_path) -> None:
+    client = sess_env.client
+    root = str(tmp_path / "proj")
+    (tmp_path / "proj").mkdir()
+    created = client.post(
+        "/api/sessions",
+        json={"title": "bound", "workspace_root": root},
+    ).json()
+
+    cleared = client.patch(
+        f"/api/sessions/{created['id']}",
+        json={"workspace_root": None},
+    )
+    assert cleared.status_code == 400

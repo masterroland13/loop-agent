@@ -53,9 +53,9 @@ def register_attachment_tools() -> None:
     registry.register(
         name="read_attachment",
         description=(
-            "Read a chat attachment uploaded for this session by attachment_id. "
-            "Use when the user message lists [附件] with ids. Returns numbered text lines; "
-            "binary files return NOT_TEXT."
+            "Read a text chat attachment by attachment_id from the [附件] block. "
+            "Do not use for images (pixels are already injected as vision input) or PDF "
+            "(not extracted yet). Returns numbered text lines; binary/image/PDF return NOT_TEXT."
         ),
         parameters={
             "type": "object",

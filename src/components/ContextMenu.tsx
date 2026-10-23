@@ -118,7 +118,7 @@ function SubmenuFlyout({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       className={[
-        'absolute top-[-2px] z-[70] min-w-[180px] px-1',
+        'absolute top-[-2px] z-[70] min-w-[120px] max-w-[180px] px-0.5',
         PANEL,
         flipLeft ? 'right-full mr-0.5' : 'left-full ml-0.5',
       ].join(' ')}
@@ -206,7 +206,7 @@ export function ContextMenu({ x, y, onClose, items }: ContextMenuProps) {
   const menu = (
     <div
       ref={menuRef}
-      className={`fixed z-[60] min-w-[180px] px-1 ${PANEL}`}
+      className={`fixed z-[60] min-w-[168px] px-1 ${PANEL}`}
       style={{ top: pos.top, left: pos.left }}
       role="menu"
     >

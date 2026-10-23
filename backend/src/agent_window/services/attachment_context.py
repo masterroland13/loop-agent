@@ -1,4 +1,4 @@
-"""ContextVar for session-scoped attachment tools."""
+"""ContextVar for session-scoped tools (attachments + gate proposals)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ _current_session_id: contextvars.ContextVar[str | None] = contextvars.ContextVar
 
 @contextmanager
 def use_attachment_session(session_id: str) -> Iterator[None]:
+    """Bind the active turn's session_id for tools that create pending gates."""
     token = _current_session_id.set(session_id)
     try:
         yield
@@ -21,4 +22,9 @@ def use_attachment_session(session_id: str) -> Iterator[None]:
 
 
 def get_attachment_session_id() -> str | None:
+    return _current_session_id.get()
+
+
+def get_turn_session_id() -> str | None:
+    """Session id for the in-flight agent turn (same ContextVar as attachments)."""
     return _current_session_id.get()

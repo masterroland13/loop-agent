@@ -1,5 +1,14 @@
 export type Role = 'user' | 'assistant'
 
+export type {
+  ActivityItem,
+  ActivityKind,
+  ActivitySegment,
+  ExploreAction,
+  SegmentKind,
+  TurnActivitySnapshot,
+} from '../utils/turnActivity'
+
 export interface AttachmentMeta {
   id: string
   filename: string
@@ -55,8 +64,10 @@ export interface PendingMemory {
   mode: string
   preview: string
   content: string
+  target?: 'user' | 'memory'
   status: 'pending' | 'applied' | 'rejected' | 'timeout' | 'failed' | 'cancelled'
   error?: string
+  op_summary?: string
 }
 
 export interface TurnMeta {
@@ -77,8 +88,13 @@ export interface MessagePair {
   user: Message
   assistant: Message
   isFavorite: boolean
-  /** Live tool activity for the current turn (not persisted). */
+  /** Live tool activity for the current turn (not persisted). Kept for retry helpers. */
   toolTrace?: ToolTraceItem[]
+  /** Cursor-style activity timeline (S0). */
+  activityEvents?: import('../utils/turnActivity').ActivityEvent[]
+  activity?: import('../utils/turnActivity').TurnActivitySnapshot
+  /** Wall-clock ms when the turn started streaming (for Worked for …). */
+  activityStartedAt?: number
   /** Last turn failed (stream error); enables retry. */
   failed?: boolean
   /** Per-turn meta from SSE / assistant.summary. */
@@ -87,7 +103,7 @@ export interface MessagePair {
   goal?: string
   /** Prior sticky goal when this turn changed intent (F8). */
   previousGoal?: string
-  /** Latest progress checkpoint hint (interval or after gate). */
+  /** Latest progress checkpoint hint (interval or after gate). Retained in state; UI hidden in S0b. */
   progressCheckpoint?: {
     toolsSinceLast: number
     reason: string
@@ -97,5 +113,7 @@ export interface MessagePair {
   }
   /** True when assistant row exists but turn_meta not finalized (refresh recovery). */
   turnInProgress?: boolean
+  /** Hit max_tool_iters soft-land — reply is mid-task wrap-up, not done. */
+  softLanded?: boolean
 }
 

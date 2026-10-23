@@ -1,6 +1,7 @@
 import { forwardRef } from 'react'
-import type { MessagePair, ToolTraceItem } from '../types'
+import type { MessagePair } from '../types'
 import { MessagePairItem } from './MessagePairItem'
+import type { GateFocusTarget } from './TurnActivity'
 
 interface MessageListProps {
   pairs: MessagePair[]
@@ -17,13 +18,18 @@ interface MessageListProps {
   onExpandedAttach?: () => void
   onToggleFavorite: (id: string) => void
   onRetry?: (pairId: string) => void
-  onRetryToolStep?: (pairId: string, item: ToolTraceItem) => void
+  onContinueSoftLand?: (pairId: string) => void
+  onFocusGate?: (target: GateFocusTarget) => void
   setItemRef: (index: number) => (element: HTMLDivElement | null) => void
   inputToolbar?: {
-    onModelClick?: () => void
-    onThisPc?: () => void
+    onModelClick?: (anchor: DOMRect) => void
     onRemoveAttachment?: (localKey: string) => void
-    pcMode?: boolean
+    goalMode?: boolean
+    onGoalModeToggle?: () => void
+    onMultitask?: () => void
+    onPlanIdea?: () => void
+    pinnedGoal?: string | null
+    onPinnedGoalChange?: (goal: string | null) => void
     modelName?: string
     enterToSend?: boolean
     disabled?: boolean
@@ -47,14 +53,15 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
       onExpandedAttach,
       onToggleFavorite,
       onRetry,
-      onRetryToolStep,
+      onContinueSoftLand,
+      onFocusGate,
       setItemRef,
       inputToolbar,
     },
     ref,
   ) {
     return (
-      <div ref={ref} className="min-h-0 flex-1 overflow-y-auto scroll-smooth">
+      <div ref={ref} className="relative z-0 isolate min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-6 py-8">
           {pairs.map((pair, index) => (
             <MessagePairItem
@@ -74,7 +81,12 @@ export const MessageList = forwardRef<HTMLDivElement, MessageListProps>(
               onExpandedAttach={onExpandedAttach}
               onToggleFavorite={onToggleFavorite}
               onRetry={onRetry}
-              onRetryToolStep={onRetryToolStep}
+              onContinueSoftLand={
+                onContinueSoftLand && index === pairs.length - 1
+                  ? onContinueSoftLand
+                  : undefined
+              }
+              onFocusGate={onFocusGate}
               setItemRef={setItemRef}
               inputToolbar={inputToolbar}
             />

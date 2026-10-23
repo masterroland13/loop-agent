@@ -61,22 +61,51 @@ def test_parent_dir_layer(ws: Path, monkeypatch) -> None:
         (parent / "AGENTS.md").unlink()
 
 
-def test_global_layer(ws: Path, monkeypatch) -> None:
-    global_dir = Path.home() / ".config" / "hal-agent"
-    global_dir.mkdir(parents=True, exist_ok=True)
-    global_file = global_dir / "AGENTS.md"
-    global_file.write_text("Global: answer in Chinese.", encoding="utf-8")
+def test_global_layer(ws: Path, monkeypatch, tmp_path: Path) -> None:
+    import agent_window.services.skills as skills_mod
+
+    new_file = tmp_path / "loop-agent" / "AGENTS.md"
+    legacy_file = tmp_path / "hal-agent" / "AGENTS.md"
+    new_file.parent.mkdir()
+    legacy_file.parent.mkdir()
+    new_file.write_text("Global: answer in Chinese.", encoding="utf-8")
+    legacy_file.write_text("Legacy: should not win.", encoding="utf-8")
+    monkeypatch.setattr(
+        skills_mod,
+        "global_agents_md_candidates",
+        lambda: [new_file, legacy_file],
+    )
     (ws / "AGENTS.md").write_text("Project: use pytest.", encoding="utf-8")
-    try:
-        paths = agents_md_paths()
-        assert len(paths) == 2
-        assert paths[0] == global_file
-        assert paths[1] == ws / "AGENTS.md"
-        merged = read_agents_md()
-        assert "answer in Chinese" in merged
-        assert "use pytest" in merged
-    finally:
-        global_file.unlink(missing_ok=True)
+    paths = agents_md_paths()
+    assert len(paths) == 2
+    assert paths[0] == new_file
+    assert paths[1] == ws / "AGENTS.md"
+    assert legacy_file not in paths
+    merged = read_agents_md()
+    assert "answer in Chinese" in merged
+    assert "use pytest" in merged
+    assert "should not win" not in merged
+
+
+def test_global_layer_falls_back_to_previous_config_dir(ws: Path, monkeypatch, tmp_path: Path) -> None:
+    import agent_window.services.skills as skills_mod
+
+    new_file = tmp_path / "loop-agent" / "AGENTS.md"
+    legacy_file = tmp_path / "hal-agent" / "AGENTS.md"
+    legacy_file.parent.mkdir()
+    legacy_file.write_text("Legacy: answer in Chinese.", encoding="utf-8")
+    monkeypatch.setattr(
+        skills_mod,
+        "global_agents_md_candidates",
+        lambda: [new_file, legacy_file],
+    )
+    (ws / "AGENTS.md").write_text("Project: use pytest.", encoding="utf-8")
+    paths = agents_md_paths()
+    assert paths[0] == legacy_file
+    assert new_file not in paths
+    merged = read_agents_md()
+    assert "answer in Chinese" in merged
+    assert "use pytest" in merged
 
 
 def test_empty_agents_md_skipped(ws: Path) -> None:
@@ -112,7 +141,8 @@ def test_skills_inject_name_desc_only(ws: Path, monkeypatch) -> None:
     # Should NOT have the full body
     assert "Do a thorough review" not in text
     # Should mention how to load
-    assert "read_file" in text
+    assert "load via tools" in text or "read_file" in text
+    assert "SKILL.md" in text or "tools" in text
 
 
 def test_skills_not_active_not_injected(ws: Path) -> None:

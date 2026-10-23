@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Ouroboros">
+  <!-- Flat logo: continuous ring, head at top-left, tail tip clamped in jaws -->
+  <g fill="#000">
+    <!--
+      Body: thick circular band with a mouth gap near the top-left.
+      Outer R≈108, inner R≈72, center 128,128.
+      Gap roughly from 200° to 235° (screen coords, 0° = east, CCW).
+    -->
+    <path d="
+      M 128 20
+      A 108 108 0 1 1 46.5 72.5
+      L 68.5 92.5
+      A 72 72 0 1 0 128 56
+      Z
+    "/>
+
+    <!-- Tail tip: continues past the gap and into the mouth cavity -->
+    <path d="
+      M 46.5 72.5
+      C 42 68 38 65.5 34 64.5
+      C 29.5 63.5 25.5 64.5 22.5 67.5
+      C 20 70 18.5 73.5 18.5 77.5
+      C 21.5 74.5 25.5 72.5 30 72.5
+      C 34.5 72.5 39 74.5 43.5 78.5
+      C 45.5 75.5 46.5 73.5 46.5 72.5
+      Z
+    "/>
+
+    <!-- Upper jaw: sits above / over the tail tip -->
+    <path d="
+      M 128 20
+      C 112 16 96 18 84 26
+      C 74 32 66 42 62 54
+      C 60 50 58.5 46.5 57.5 43
+      C 55.5 36 56 29 60 24
+      C 66 16 76 12 88 12
+      C 100 12 114 14 128 20
+      Z
+    "/>
+
+    <!-- Lower jaw: sits below the tail tip, closing the bite -->
+    <path d="
+      M 92 78
+      C 84 84 74 86 64 84
+      C 56 82 49 76 45 68
+      C 48 72 53 74.5 58.5 74.5
+      C 66 74.5 74 71 80 65
+      C 84 70 88 74.5 92 78
+      Z
+    "/>
+  </g>
+
+  <!-- Eye -->
+  <circle cx="96" cy="34" r="5" fill="#fff"/>
+</svg>

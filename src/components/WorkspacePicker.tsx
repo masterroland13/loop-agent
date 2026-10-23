@@ -6,6 +6,7 @@ import {
   setWorkspace,
   type WorkspaceStatus,
 } from '../api/agent'
+import { useT } from '../i18n'
 
 interface WorkspacePickerProps {
   isOpen: boolean
@@ -14,6 +15,7 @@ interface WorkspacePickerProps {
 }
 
 export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerProps) {
+  const t = useT()
   const [status, setStatus] = useState<WorkspaceStatus | null>(null)
   const [browsePath, setBrowsePath] = useState('')
   const [parent, setParent] = useState<string | null>(null)
@@ -31,9 +33,9 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
       setDirs(data.directories)
       setManualPath(data.path)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '无法浏览目录')
+      setError(err instanceof Error ? err.message : t('workspace.browseFailed'))
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (!isOpen) return
@@ -45,13 +47,13 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
         setStatus(ws)
         await loadBrowse(ws.root || undefined)
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : '加载失败')
+        if (!cancelled) setError(err instanceof Error ? err.message : t('workspace.loadFailed'))
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [isOpen, loadBrowse])
+  }, [isOpen, loadBrowse, t])
 
   useEffect(() => {
     if (!isOpen) return
@@ -73,7 +75,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
       onSaved(next)
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '设置失败')
+      setError(err instanceof Error ? err.message : t('workspace.setFailed'))
     } finally {
       setBusy(false)
     }
@@ -87,7 +89,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
       setStatus(next)
       onSaved(next)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '清除失败')
+      setError(err instanceof Error ? err.message : t('workspace.clearFailed'))
     } finally {
       setBusy(false)
     }
@@ -99,10 +101,8 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
       <div className="relative flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-[var(--text-h)]">This PC · 工作区</h2>
-            <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-              绑定本机目录后，Agent 可用 list_dir / read_file / grep（只读）
-            </p>
+            <h2 className="text-base font-semibold text-[var(--text-h)]">{t('workspace.modalTitle')}</h2>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">{t('workspace.modalSubtitle')}</p>
           </div>
           <button
             type="button"
@@ -118,7 +118,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {status?.configured && (
             <div className="mb-4 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-2 text-xs">
-              <div className="text-[var(--text-muted)]">当前工作区</div>
+              <div className="text-[var(--text-muted)]">{t('workspace.currentWorkspace')}</div>
               <div className="mt-0.5 break-all font-mono text-[var(--text-h)]">{status.root}</div>
             </div>
           )}
@@ -127,7 +127,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
             <input
               value={manualPath}
               onChange={(e) => setManualPath(e.target.value)}
-              placeholder="/home/.../project"
+              placeholder={t('workspace.pathPlaceholder')}
               className="min-w-0 flex-1 rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 font-mono text-sm text-[var(--text-h)] outline-none focus:border-[var(--input-focus)]"
             />
             <button
@@ -136,7 +136,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
               onClick={() => handleSelect(manualPath.trim())}
               className="shrink-0 rounded-lg bg-[var(--text-h)] px-3 py-2 text-sm font-medium text-[var(--bg)] disabled:opacity-40"
             >
-              绑定
+              {t('workspace.bind')}
             </button>
           </div>
 
@@ -145,18 +145,18 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
             <div className="flex gap-2">
               {parent && (
                 <button type="button" className="hover:text-[var(--text-h)]" onClick={() => loadBrowse(parent)}>
-                  上级
+                  {t('workspace.parent')}
                 </button>
               )}
               <button type="button" className="hover:text-[var(--text-h)]" onClick={() => loadBrowse(browsePath)}>
-                刷新
+                {t('workspace.refresh')}
               </button>
             </div>
           </div>
 
           <div className="max-h-64 overflow-y-auto rounded-lg border border-[var(--border-subtle)]">
             {dirs.length === 0 ? (
-              <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">无子目录</div>
+              <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">{t('workspace.noSubdirs')}</div>
             ) : (
               dirs.map((d) => (
                 <div
@@ -176,7 +176,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
                     onClick={() => handleSelect(d.path)}
                     className="shrink-0 rounded-md px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--surface)] hover:text-[var(--text-h)]"
                   >
-                    选此
+                    {t('workspace.selectThis')}
                   </button>
                 </div>
               ))
@@ -193,7 +193,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
             onClick={handleClear}
             className="text-sm text-[var(--text-muted)] hover:text-[var(--text-h)] disabled:opacity-40"
           >
-            清除绑定
+            {t('workspace.clearBinding')}
           </button>
           <button
             type="button"
@@ -201,7 +201,7 @@ export function WorkspacePicker({ isOpen, onClose, onSaved }: WorkspacePickerPro
             onClick={() => handleSelect(browsePath)}
             className="rounded-lg bg-[var(--text-h)] px-4 py-2 text-sm font-medium text-[var(--bg)] disabled:opacity-40"
           >
-            使用当前目录
+            {t('workspace.useCurrentDir')}
           </button>
         </div>
       </div>

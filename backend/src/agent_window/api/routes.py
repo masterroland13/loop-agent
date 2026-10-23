@@ -3,9 +3,10 @@
 import asyncio
 import json
 import time
-from typing import List
+from datetime import datetime
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,12 @@ from agent_window.schemas import (
     LlmConfigResponse,
     LlmConfigUpdateRequest,
     LlmTestResponse,
+    ModelGlobalsUpdateRequest,
+    ModelProfileCreateRequest,
+    ModelProfileResponse,
+    ModelProfilesListResponse,
+    ProviderPresetResponse,
+    ModelProfileUpdateRequest,
     MemoryContentResponse,
     MemoryContentUpdateRequest,
     MemoryProposalResponse,
@@ -42,45 +49,83 @@ from agent_window.schemas import (
     SkillActivateRequest,
     SkillInfo,
     SkillsResponse,
+    SteerRequest,
     ToolInfo,
     ToolsResponse,
+    UpdateSessionRequest,
     WorkspaceBrowseResponse,
+    WorkspaceFileCopyRequest,
+    WorkspaceFileCopyResponse,
+    WorkspaceFileDeleteResponse,
+    WorkspaceFilePathRequest,
+    WorkspaceFilePathResponse,
+    WorkspaceFileReadResponse,
+    WorkspaceFileRevealResponse,
+    WorkspaceFilesListResponse,
+    WorkspaceFileRenameRequest,
+    WorkspaceFileRenameResponse,
+    WorkspaceFileTreeStatsResponse,
+    WorkspaceFileWriteRequest,
+    WorkspaceFileWriteResponse,
     WorkspaceSetRequest,
     WorkspaceStatusResponse,
 )
 from agent_window.agent.loop import run_agent_loop
-from agent_window.agent.goal import (
-    extract_turn_goal,
-    goals_equal,
-    previous_turn_goal_from_messages,
-    prior_user_texts_from_history,
+from agent_window.core.event_sink import EventSink
+from agent_window.core.goal_hooks import goal_change_audit_event, resolve_session_goal
+from agent_window.core.loop_config import LoopConfig
+from agent_window.core.session_tree import (
+    build_llm_messages,
+    build_path_from_session,
+    last_user_on_path,
+    path_ending_at,
 )
+from agent_window.core.steering import push_steering
+from agent_window.core.tool_hooks import with_observe_spill
 from agent_window.services.agent_settings import load_agent_settings, save_agent_settings
 from agent_window.services.attachment_context import use_attachment_session
 from agent_window.services.attachments import (
     AttachmentError,
     build_content_for_model,
+    build_user_chat_message,
     list_metas_for_ids,
     load_meta,
+    parse_attachments_json,
     resolve_file,
+    resolve_model_for_attachments,
     save_upload,
 )
 from agent_window.services.llm_config import public_llm_config, save_llm_config
+from agent_window.services import model_registry as model_registry
 from agent_window.services.audit import (
     audit_to_public,
     emit_audit,
     list_audit_events,
     list_audit_session_summaries,
 )
-from agent_window.services.compress import approx_messages_tokens, approx_tokens, compress_messages_if_needed
+from agent_window.services.compress import (
+    approx_messages_tokens,
+    approx_tokens,
+    compress_messages_if_needed,
+)
 from agent_window.services.memory import (
+    MEMORY_GUIDANCE,
     decide_memory,
+    get_frozen_memory_md,
+    get_frozen_user_md,
+    get_memory_md_char_limit,
+    get_user_md_char_limit,
     list_pending_memories,
+    memory_md_path,
     memory_status,
+    memory_status_for_target,
     memory_to_public,
+    normalize_memory_target,
+    path_for_target,
+    read_for_target,
+    read_memory_md,
     read_user_md,
-    user_md_path,
-    write_user_md,
+    write_for_target,
 )
 from agent_window.services.patches import apply_partial_patch, decide_patch, list_pending, patch_to_public, retry_patch
 from agent_window.services.provider import provider
@@ -101,7 +146,6 @@ from agent_window.services.skills import (
 from agent_window.services.storage import (
     add_message,
     create_session,
-    delete_message,
     delete_session,
     get_message,
     get_session,
@@ -109,7 +153,10 @@ from agent_window.services.storage import (
     list_sessions,
     read_session_blob,
     toggle_message_favorite,
+    update_session_goal_mode,
+    update_session_pinned_goal,
     update_session_title,
+    update_session_workspace_root,
 )
 from agent_window.services.turn_trace import TurnTraceWriter, trace_for_response
 from agent_window.services.workspace import (
@@ -117,8 +164,19 @@ from agent_window.services.workspace import (
     browse_directory,
     clear_workspace_root,
     get_workspace_root,
+    copy_entry,
+    delete_entry,
+    list_directory,
+    mkdir_directory,
+    read_editor_file,
+    read_text_file,
+    rename_entry,
+    reveal_in_explorer,
     set_workspace_root,
+    tree_stats,
     workspace_status,
+    write_editor_file,
+    write_text_file,
 )
 from agent_window.tools.registry import registry
 
@@ -162,7 +220,31 @@ def _message_to_response(message) -> MessageResponse:
         trace=trace_for_response(message),
         attachments=_parse_message_attachments(message, session_id),
         created_at=message.created_at,
+        parent_id=getattr(message, "parent_id", None),
+        entry_type=getattr(message, "entry_type", None) or "message",
     )
+
+
+def _resolve_turn_goal_for_session(
+    session,
+    *,
+    user_text: str,
+    history_messages: list,
+    audit_source: str,
+    session_id: str,
+) -> tuple[str | None, str | None, bool]:
+    """F1+F8: resolve turn goal (extract / pin) and emit goal.change when needed."""
+    resolution = resolve_session_goal(
+        goal_mode=bool(getattr(session, "goal_mode", False)),
+        user_text=user_text,
+        history_messages=history_messages,
+        pinned_goal=getattr(session, "pinned_goal", None),
+        audit_source=audit_source,
+    )
+    payload = goal_change_audit_event(resolution)
+    if payload:
+        _audit("goal.change", payload, session_id=session_id)
+    return resolution.turn_goal, resolution.previous_goal, resolution.changed
 
 
 async def _agent_turn_event_stream(
@@ -184,6 +266,10 @@ async def _agent_turn_event_stream(
     http_request: Request,
     agent_cfg: dict,
     previous_goal: str | None = None,
+    compress_method: str | None = None,
+    compress_preview: str | None = None,
+    model_fallback: bool = False,
+    fallback_profile_id: str | None = None,
 ):
     """Yield SSE lines for one agent turn; persist F6 trace on placeholder assistant."""
     if not session_db:
@@ -196,12 +282,31 @@ async def _agent_turn_event_stream(
         return
 
     writer = TurnTraceWriter(session_local, session_db, assistant_row)
+    # Omit goal key when Goal mode is off so clients do not show the quality-ring banner.
+    meta_payload: dict = {
+        "message_id": user_message_id,
+        "assistant_message_id": writer.assistant_id,
+    }
+    if turn_goal:
+        meta_payload["goal"] = turn_goal
+    if model_fallback:
+        meta_payload["model_fallback"] = True
+        meta_payload["model"] = model_name
+        if fallback_profile_id:
+            meta_payload["profile_id"] = fallback_profile_id
     yield (
         "event: meta\ndata: "
-        f"{json.dumps({'message_id': user_message_id, 'goal': turn_goal, 'assistant_message_id': writer.assistant_id}, ensure_ascii=False)}\n\n"
+        f"{json.dumps(meta_payload, ensure_ascii=False)}\n\n"
     )
 
     assistant_content_parts: List[str] = []
+    loop_cfg = with_observe_spill(
+        LoopConfig.from_settings(
+            goal_mode=bool(getattr(session_db, "goal_mode", False)),
+            preset=agent_cfg.get("loop_preset") or "yolo",
+        ),
+        writer.spill,
+    )
 
     async def _agent_events():
         with use_attachment_session(session_id):
@@ -211,6 +316,9 @@ async def _agent_turn_event_stream(
                 cancel_event=cancel_event,
                 goal=turn_goal,
                 previous_goal=previous_goal,
+                config=loop_cfg,
+                emit=EventSink(),
+                session_id=session_id,
             ):
                 yield event
 
@@ -228,6 +336,14 @@ async def _agent_turn_event_stream(
             "memory",
             "token",
             "error",
+            "agent_start",
+            "agent_end",
+            "turn_start",
+            "turn_end",
+            "steer_inject",
+            "soft_land",
+            "edit_nudge",
+            "thought",
         ):
             mapped = writer.note_sse(event)
 
@@ -238,6 +354,17 @@ async def _agent_turn_event_stream(
             yield f"event: turn_goal\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         elif etype == "progress_checkpoint":
             yield f"event: progress_checkpoint\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        elif etype in (
+            "agent_start",
+            "agent_end",
+            "turn_start",
+            "turn_end",
+            "steer_inject",
+            "soft_land",
+            "edit_nudge",
+            "thought",
+        ):
+            yield f"event: {etype}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
         elif etype == "tools_disabled":
             emit_audit(
                 session_local,
@@ -298,9 +425,14 @@ async def _agent_turn_event_stream(
                 "approx_completion_tokens": approx_tokens(full_content),
                 "compressed": compressed,
                 "memory_injected": memory_injected,
-                "goal": turn_goal,
                 "message_id": writer.assistant_id,
             }
+            if turn_goal:
+                turn_meta["goal"] = turn_goal
+            if compressed and compress_method:
+                turn_meta["compress_method"] = compress_method
+            if compressed and compress_preview:
+                turn_meta["compress_preview"] = compress_preview
             writer.finalize(
                 summary=json.dumps(turn_meta, ensure_ascii=False),
                 content=full_content,
@@ -372,7 +504,7 @@ def _load_prompt_file(workspace_root: str, filename: str) -> str:
         return ""
 
 
-def _system_prompt() -> str:
+def _system_prompt(session_id: str | None = None) -> str:
     import agent_window.tools  # noqa: F401
 
     tool_names = ", ".join(registry.list_names()) or "(none)"
@@ -393,7 +525,8 @@ def _system_prompt() -> str:
             "To delete a file, call propose_delete(path); do not use rm or helper scripts. "
             "To run tests or commands, call propose_shell with argv as a string array "
             '(e.g. ["pytest","-q"] or ["git","status"]); it waits for user approval. '
-            "To remember durable user preferences/facts, call propose_memory. "
+            "To remember durable preferences use propose_memory target=user; "
+            "for workspace/project lessons use propose_memory target=memory. "
             "No shell piping/redirection. Prefer old_string+new_string after read_file. "
             "Paths and cwd are relative to the workspace root. "
             "If a propose_edit/propose_delete/propose_shell/propose_memory is rejected and the user asks "
@@ -405,17 +538,59 @@ def _system_prompt() -> str:
         workspace_hint = (
             "No workspace is configured yet. If the user asks about local files, "
             "tell them to set a folder via This PC first. Do not invent file contents. "
-            "You may still call propose_memory for durable preferences."
+            "You may still call propose_memory (target=user or target=memory) for durable notes."
         )
 
-    user_md = read_user_md().strip()
-    memory_block = ""
-    if user_md:
-        memory_block = (
-            "\n\n## USER.md (long-term memory; read-only here)\n"
-            + user_md[:6000]
-            + ("\n…" if len(user_md) > 6000 else "")
+    def _curated_block(
+        *,
+        label: str,
+        raw: str,
+        limit: int,
+        frozen: bool,
+        shrink_hint: str,
+    ) -> str:
+        text = (raw or "").strip()
+        if not text:
+            return ""
+        n = len(text)
+        body = text
+        overflow_note = ""
+        if n > limit:
+            body = text[:limit]
+            overflow_note = f"\n\n⚠️ {label} exceeds {limit} chars; {shrink_hint}"
+        state = "frozen this session" if frozen else "long-term"
+        header = f"## {label} ({state}; {n}/{limit} chars)"
+        return "\n\n" + header + "\n" + body + overflow_note
+
+    user_limit = get_user_md_char_limit()
+    mem_limit = get_memory_md_char_limit()
+    if session_id:
+        raw_user_md = get_frozen_user_md(session_id)
+        raw_memory_md = get_frozen_memory_md(session_id)
+        frozen = True
+    else:
+        raw_user_md = read_user_md()
+        raw_memory_md = read_memory_md()
+        frozen = False
+
+    memory_block = (
+        "\n\n"
+        + MEMORY_GUIDANCE
+        + _curated_block(
+            label="MEMORY.md",
+            raw=raw_memory_md,
+            limit=mem_limit,
+            frozen=frozen,
+            shrink_hint="propose_memory action=replace/remove or mode=replace target=memory to shrink.",
         )
+        + _curated_block(
+            label="USER.md",
+            raw=raw_user_md,
+            limit=user_limit,
+            frozen=frozen,
+            shrink_hint="propose_memory action=replace/remove or mode=replace target=user to shrink.",
+        )
+    )
 
     skill_blocks = skill_context_blocks()
     skills_section = ""
@@ -426,18 +601,31 @@ def _system_prompt() -> str:
         base = system_override
     else:
         base = (
-            "You are a helpful coding assistant. Answer concisely in Chinese unless the user asks otherwise. "
+            "You are Loop Agent, a helpful coding assistant in this workspace. "
+            "When you introduce yourself or name this product, say Loop Agent only; "
+            "do not call it Hal Agent. "
+            "Answer concisely in Chinese unless the user asks otherwise. "
             "When providing code, use Markdown code blocks with the language identifier. "
             "中文回复必须使用规范的全角标点（，。：；！？），不要在中文句子里夹半角逗号、冒号或句号；"
             "代码、命令、路径、英文术语保持半角原样。 "
+            "行内反引号只用于真正需要区分的路径、符号名或短代码片段；"
+            "不要给普通英文词、布尔字面量（True/False）、或正文里每个文件名都加反引号。 "
             f"You have tools available: {tool_names}. "
             f"{workspace_hint} "
-            "If the user message includes an [附件] block with attachment ids, call read_attachment(attachment_id=...) to read those files (not workspace read_file). "
+            "If the user message includes an [附件] block: for text files call "
+            "read_attachment(attachment_id=...) (not workspace read_file); "
+            "for image attachments the pixels are already injected as multimodal content this turn — "
+            "describe them directly and do NOT call read_attachment on images; "
+            "PDF is not auto-extracted yet — do not invent extraction scripts. "
             "When the user message is only attachments (or starts with 「（见附件）」) without an explicit instruction "
             "(extract/save/write/create/convert/summarize-to-file/etc.), default to read-only: "
-            "call read_attachment if the file is text-readable, then give a short verbal summary in the reply; "
+            "for text call read_attachment then give a short verbal summary; for images give a short verbal description; "
             "do NOT call propose_edit, propose_delete, or propose_shell to extract/persist attachment contents "
             "into the workspace, and do not invent helper scripts — unless the user explicitly asks to write files. "
+            "When the user explicitly asks to save/write/persist an attachment into the workspace "
+            "(e.g. 「把附件保存为 workspace 文件」/ save attachment to workspace), "
+            "you MUST: (1) read_attachment for text if needed, then (2) call propose_edit with the file path + full contents; "
+            "do not stop after read-only tools with an empty reply. "
             "When the user asks about weather, call get_weather. "
             "Do not invent tool results — always call the tool. "
             "When the user asks you to create, edit, or run something in the workspace, "
@@ -466,20 +654,49 @@ def _audit(event_type: str, payload: dict | None = None, session_id: str | None 
         db.close()
 
 
-async def _summarize_blob(blob: str) -> str:
+async def _summarize_blob(blob: str, profile_id: str | None = None) -> str:
+    """LLM compressor for auto_compress — handoff-oriented 6-section summary.
+
+    ``profile_id`` selects the gateway. The summary uses that profile's default model.
+    """
     turn = await provider.chat_complete(
         [
             {
                 "role": "system",
-                "content": "用中文极简摘要下列对话历史，保留约束与关键事实，不超过400字。",
+                "content": (
+                    "你是交接摘要压缩器（CONTEXT CHECKPOINT）。"
+                    "严格按用户给出的六个 ## 小节输出中文交接包；"
+                    "Progress 与 Critical Context 必须写清已触及的文件路径；"
+                    "若输入中没有 tool 结果，Progress 写「摘要窗口内未见工具结果」，禁止写「尚未开始」；"
+                    "禁止把 Goal 原文复读进 Progress / Next Steps / Critical Context；"
+                    "不要编造未出现的事实；不要输出小节以外的开场白或结语。"
+                ),
             },
             {"role": "user", "content": blob},
         ],
         tools=None,
         model=None,
-        max_tokens=512,
+        max_tokens=2048,
+        profile_id=profile_id,
     )
     return (turn.get("content") or "").strip()
+
+
+def _session_to_response(session) -> SessionResponse:
+    return SessionResponse(
+        id=session.id,
+        title=session.title,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+        workspace_root=session.workspace_root,
+        goal_mode=bool(session.goal_mode),
+        pinned_goal=getattr(session, "pinned_goal", None),
+        leaf_id=session.leaf_id,
+        profile_id=getattr(session, "profile_id", None),
+        model_id=getattr(session, "model_id", None),
+        title_locked=bool(getattr(session, "title_locked", False)),
+        last_prompt_at=getattr(session, "last_prompt_at", None),
+    )
 
 
 @router.get("/api/runtime", response_model=RuntimeResponse)
@@ -491,6 +708,24 @@ def runtime_endpoint():
 def cancel_session_endpoint(session_id: str):
     cancelled = cancel_turn(session_id)
     return {"ok": True, "cancelled": cancelled}
+
+
+@router.post("/api/sessions/{session_id}/steer")
+def steer_session_endpoint(
+    session_id: str,
+    request: SteerRequest,
+    db: Session = Depends(get_db),
+):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    result = push_steering(session_id, request.content)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "EMPTY_STEER", "message": "content required"},
+        )
+    return {"ok": True, "queued": True}
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -518,9 +753,15 @@ def get_settings_endpoint():
 
 
 @router.put("/api/settings", response_model=AgentSettingsResponse)
-def put_settings_endpoint(request: AgentSettingsUpdateRequest, db: Session = Depends(get_db)):
+def put_settings_endpoint(
+    request: AgentSettingsUpdateRequest,
+    db: Session = Depends(get_db),
+    session_id: str | None = Query(default=None),
+    x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
+):
     updated = save_agent_settings(request.model_dump(exclude_unset=True))
-    emit_audit(db, "settings.update", payload=updated)
+    audit_session_id = (session_id or x_session_id or "").strip() or None
+    emit_audit(db, "settings.update", payload=updated, session_id=audit_session_id)
     return AgentSettingsResponse(**updated)
 
 
@@ -570,6 +811,141 @@ async def test_llm_config_endpoint():
     return LlmTestResponse(ok=True, latency_ms=latency, model_count=count)
 
 
+def _bind_turn_model(session, request_model: str | None, db: Session) -> tuple[str, bool, str]:
+    """Resolve profile + model for this turn and pin the profile on the SSE task context."""
+    from agent_window.services.provider import turn_profile_id
+
+    binding = model_registry.resolve_turn_binding(
+        getattr(session, "profile_id", None),
+        getattr(session, "model_id", None),
+        request_model,
+    )
+    if binding["fallback"]:
+        session.profile_id = binding["profile_id"] or None
+        session.model_id = binding["model_id"] or None
+        db.commit()
+    turn_profile_id.set(binding["profile_id"] or None)
+    return binding["model_id"], bool(binding["fallback"]), binding["profile_id"]
+
+
+@router.get("/api/model-profile-presets", response_model=List[ProviderPresetResponse])
+def list_model_profile_presets():
+    from agent_window.services.provider_presets import list_provider_presets
+
+    return [ProviderPresetResponse(**row) for row in list_provider_presets()]
+
+
+@router.get("/api/model-profiles", response_model=ModelProfilesListResponse)
+def list_model_profiles_endpoint():
+    data = model_registry.list_profiles_public()
+    return ModelProfilesListResponse(**data)
+
+
+@router.post("/api/model-profiles", response_model=ModelProfileResponse)
+def create_model_profile_endpoint(request: ModelProfileCreateRequest, db: Session = Depends(get_db)):
+    try:
+        created = model_registry.create_profile(
+            label=request.label,
+            base_url=request.base_url,
+            api_key=request.api_key,
+            model_id=request.model_id,
+            enabled=request.enabled,
+            activate=request.activate,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_MODEL_PROFILE", "message": str(e)}) from e
+    emit_audit(db, "model_profile.create", payload={"id": created["id"], "label": created["label"]})
+    provider._sync_client()
+    return ModelProfileResponse(**created)
+
+
+@router.patch("/api/model-profiles/{profile_id}", response_model=ModelProfilesListResponse)
+def update_model_profile_endpoint(
+    profile_id: str,
+    request: ModelProfileUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    payload = request.model_dump(exclude_unset=True)
+    globals_patch = {}
+    if "temperature" in payload:
+        globals_patch["temperature"] = payload.pop("temperature")
+    if "max_tokens" in payload:
+        globals_patch["max_tokens"] = payload.pop("max_tokens")
+    try:
+        if payload:
+            model_registry.update_profile(profile_id, payload)
+        if globals_patch:
+            model_registry.update_globals(**globals_patch)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "PROFILE_NOT_FOUND", "message": "档案不存在"}) from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_MODEL_PROFILE", "message": str(e)}) from e
+    emit_audit(
+        db,
+        "model_profile.update",
+        payload={
+            "id": profile_id,
+            "api_key_updated": "api_key" in payload and bool(payload.get("api_key")),
+        },
+    )
+    provider._sync_client()
+    return ModelProfilesListResponse(**model_registry.list_profiles_public())
+
+
+@router.delete("/api/model-profiles/{profile_id}", response_model=ModelProfilesListResponse)
+def delete_model_profile_endpoint(profile_id: str, db: Session = Depends(get_db)):
+    try:
+        data = model_registry.delete_profile(profile_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "PROFILE_NOT_FOUND", "message": "档案不存在"}) from None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "CANNOT_DELETE_PROFILE", "message": str(e)}) from e
+    emit_audit(db, "model_profile.delete", payload={"id": profile_id})
+    provider._sync_client()
+    return ModelProfilesListResponse(**data)
+
+
+@router.post("/api/model-profiles/{profile_id}/activate", response_model=ModelProfilesListResponse)
+def activate_model_profile_endpoint(profile_id: str, db: Session = Depends(get_db)):
+    try:
+        data = model_registry.set_active(profile_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"code": "PROFILE_NOT_FOUND", "message": "档案不存在"}) from None
+    emit_audit(db, "model_profile.activate", payload={"id": profile_id})
+    provider._sync_client()
+    return ModelProfilesListResponse(**data)
+
+
+@router.put("/api/model-profiles/globals", response_model=ModelProfilesListResponse)
+def update_model_globals_endpoint(request: ModelGlobalsUpdateRequest, db: Session = Depends(get_db)):
+    try:
+        data = model_registry.update_globals(
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_MODEL_GLOBALS", "message": str(e)}) from e
+    emit_audit(db, "model_profile.globals", payload=request.model_dump(exclude_unset=True))
+    return ModelProfilesListResponse(**data)
+
+
+@router.post("/api/model-profiles/{profile_id}/test", response_model=LlmTestResponse)
+async def test_model_profile_endpoint(profile_id: str):
+    import time as _time
+
+    if model_registry.get_profile(profile_id) is None:
+        raise HTTPException(status_code=404, detail={"code": "PROFILE_NOT_FOUND", "message": "档案不存在"})
+    start = _time.monotonic()
+    result = await provider.test_profile(profile_id)
+    latency = int((_time.monotonic() - start) * 1000)
+    return LlmTestResponse(
+        ok=bool(result.get("ok")),
+        latency_ms=latency,
+        model_count=result.get("model_count"),
+        error=result.get("error"),
+    )
+
+
 @router.get("/api/tools", response_model=ToolsResponse)
 def list_tools_endpoint():
     import agent_window.tools  # noqa: F401  (ensure registration)
@@ -584,15 +960,60 @@ def list_tools_endpoint():
 
 
 @router.get("/api/memory/content", response_model=MemoryContentResponse)
-def get_memory_content_endpoint():
-    return MemoryContentResponse(content=read_user_md(), path=str(user_md_path()))
+def get_memory_content_endpoint(target: str = Query(default="user")):
+    return _memory_content_response(target)
 
 
 @router.put("/api/memory/content", response_model=MemoryContentResponse)
 def put_memory_content_endpoint(request: MemoryContentUpdateRequest, db: Session = Depends(get_db)):
-    write_user_md(request.content)
-    emit_audit(db, "memory.direct_edit", payload={"size": len(request.content)})
-    return MemoryContentResponse(content=read_user_md(), path=str(user_md_path()))
+    return _put_memory_content(request.content, request.target, db)
+
+
+@router.get("/api/memory/tracks/{target}/content", response_model=MemoryContentResponse)
+def get_memory_track_content_endpoint(target: str):
+    """Path-style track API (avoids query-param ambiguity with stale proxies)."""
+    return _memory_content_response(target)
+
+
+@router.put("/api/memory/tracks/{target}/content", response_model=MemoryContentResponse)
+def put_memory_track_content_endpoint(
+    target: str,
+    request: MemoryContentUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    # Path target wins over body target.
+    return _put_memory_content(request.content, target, db)
+
+
+def _memory_content_response(target: str) -> MemoryContentResponse:
+    t = normalize_memory_target(target)
+    content = read_for_target(t)
+    st = memory_status_for_target(t)
+    path = str(path_for_target(t))
+    expected_name = "MEMORY.md" if t == "memory" else "USER.md"
+    if not path.replace("\\", "/").endswith(expected_name):
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "MEMORY_PATH_MISMATCH", "message": f"expected {expected_name}, got {path}"},
+        )
+    return MemoryContentResponse(
+        content=content,
+        path=path,
+        target=t,
+        chars=st["chars"],
+        limit=st["limit"],
+    )
+
+
+def _put_memory_content(content: str, target: str, db: Session) -> MemoryContentResponse:
+    t = normalize_memory_target(target)
+    write_for_target(t, content)
+    emit_audit(
+        db,
+        "memory.direct_edit",
+        payload={"size": len(content), "target": t},
+    )
+    return _memory_content_response(t)
 
 
 @router.get("/api/skills", response_model=SkillsResponse)
@@ -617,6 +1038,7 @@ def set_active_skills_endpoint(request: SkillActivateRequest, db: Session = Depe
 @router.get("/api/assets", response_model=AssetsResponse)
 def assets_endpoint(db: Session = Depends(get_db)):
     mem = memory_status()
+    mem_md = mem.get("memory_md") or {}
     ws = workspace_status()
     agent = load_agent_settings()
     return AssetsResponse(
@@ -627,6 +1049,13 @@ def assets_endpoint(db: Session = Depends(get_db)):
         user_md_exists=mem["exists"],
         user_md_path=mem["path"],
         user_md_size=mem["size"],
+        memory_md_exists=bool(mem_md.get("exists")),
+        memory_md_path=str(mem_md.get("path") or memory_md_path()),
+        memory_md_size=int(mem_md.get("size") or 0),
+        user_md_chars=int(mem.get("chars") or 0),
+        user_md_limit=int(mem.get("limit") or get_user_md_char_limit()),
+        memory_md_chars=int(mem_md.get("chars") or 0),
+        memory_md_limit=int(mem_md.get("limit") or get_memory_md_char_limit()),
         workspace_configured=ws["configured"],
         workspace_root=ws["root"],
         settings=AgentSettingsResponse(**agent),
@@ -686,20 +1115,24 @@ def emit_audit_endpoint(request: AuditEmitRequest, db: Session = Depends(get_db)
 
 
 @router.get("/api/memory")
-def get_memory_endpoint():
-    mem = memory_status()
+def get_memory_endpoint(target: str = "user"):
+    t = normalize_memory_target(target)
+    st = memory_status_for_target(t)
     return {
-        "exists": mem["exists"],
-        "path": mem["path"],
-        "size": mem["size"],
-        "preview": mem["preview"],
-        "content": read_user_md(),
+        "exists": st["exists"],
+        "path": st["path"],
+        "size": st["size"],
+        "preview": st["preview"],
+        "chars": st["chars"],
+        "limit": st["limit"],
+        "target": t,
+        "content": read_for_target(t),
     }
 
 
 @router.get("/api/memory/proposals", response_model=List[MemoryProposalResponse])
-def list_memory_proposals_endpoint():
-    return [MemoryProposalResponse(**m) for m in list_pending_memories()]
+def list_memory_proposals_endpoint(session_id: Optional[str] = None):
+    return [MemoryProposalResponse(**m) for m in list_pending_memories(session_id)]
 
 
 @router.post("/api/memory/proposals/{proposal_id}/apply", response_model=MemoryProposalResponse)
@@ -755,9 +1188,170 @@ def browse_workspace_endpoint(path: str | None = None):
     return WorkspaceBrowseResponse(**data)
 
 
+def _workspace_files_http_status(code: str) -> int:
+    if code == "NOT_FOUND":
+        return 404
+    if code in ("CONFLICT", "EXISTS"):
+        return 409
+    return 400
+
+
+def _workspace_file_mtime_str(data: dict) -> dict:
+    """JSON numbers lose ns precision in JS; expose mtime as a decimal string."""
+    out = dict(data)
+    out["mtime_ns"] = str(out["mtime_ns"])
+    return out
+
+
+def _parse_if_match_mtime_ns(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+@router.get("/api/workspace/files/list", response_model=WorkspaceFilesListResponse)
+def workspace_files_list_endpoint(path: str = Query(default=".", max_length=4096)):
+    try:
+        data = list_directory(path=path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    return WorkspaceFilesListResponse(**data)
+
+
+@router.get("/api/workspace/files/read", response_model=WorkspaceFileReadResponse)
+def workspace_files_read_endpoint(path: str = Query(..., min_length=1, max_length=4096)):
+    try:
+        data = read_editor_file(path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    return WorkspaceFileReadResponse(**_workspace_file_mtime_str(data))
+
+
+@router.put("/api/workspace/files/write", response_model=WorkspaceFileWriteResponse)
+def workspace_files_write_endpoint(request: WorkspaceFileWriteRequest, db: Session = Depends(get_db)):
+    try:
+        data = write_editor_file(
+            path=request.path,
+            content=request.content,
+            if_match_mtime_ns=_parse_if_match_mtime_ns(request.if_match_mtime_ns),
+            if_match_base_content=request.if_match_base_content,
+            encoding=request.encoding,
+        )
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(
+        db,
+        "files.write",
+        payload={"path": data["path"], "size": data["size"]},
+    )
+    return WorkspaceFileWriteResponse(**_workspace_file_mtime_str(data))
+
+
+@router.post("/api/workspace/files/mkdir", response_model=WorkspaceFilePathResponse)
+def workspace_files_mkdir_endpoint(request: WorkspaceFilePathRequest, db: Session = Depends(get_db)):
+    try:
+        data = mkdir_directory(path=request.path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(db, "files.mkdir", payload={"path": data["path"]})
+    return WorkspaceFilePathResponse(**data)
+
+
+@router.post("/api/workspace/files/rename", response_model=WorkspaceFileRenameResponse)
+def workspace_files_rename_endpoint(request: WorkspaceFileRenameRequest, db: Session = Depends(get_db)):
+    try:
+        data = rename_entry(from_path=request.from_path, to_path=request.to_path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(
+        db,
+        "files.rename",
+        payload={"from": data["from"], "path": data["path"]},
+    )
+    return WorkspaceFileRenameResponse(**data)
+
+
+@router.get("/api/workspace/files/stats", response_model=WorkspaceFileTreeStatsResponse)
+def workspace_files_stats_endpoint(path: str = Query(..., min_length=1, max_length=4096)):
+    try:
+        data = tree_stats(path=path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    return WorkspaceFileTreeStatsResponse(**data)
+
+
+@router.post("/api/workspace/files/copy", response_model=WorkspaceFileCopyResponse)
+def workspace_files_copy_endpoint(request: WorkspaceFileCopyRequest, db: Session = Depends(get_db)):
+    try:
+        data = copy_entry(from_path=request.from_path, to_path=request.to_path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(
+        db,
+        "files.copy",
+        payload={"from": data["from"], "path": data["path"]},
+    )
+    return WorkspaceFileCopyResponse(**data)
+
+
+@router.post("/api/workspace/files/reveal", response_model=WorkspaceFileRevealResponse)
+def workspace_files_reveal_endpoint(request: WorkspaceFilePathRequest, db: Session = Depends(get_db)):
+    try:
+        data = reveal_in_explorer(path=request.path)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(db, "files.reveal", payload={"path": data["path"]})
+    return WorkspaceFileRevealResponse(**data)
+
+
+@router.delete("/api/workspace/files/delete", response_model=WorkspaceFileDeleteResponse)
+def workspace_files_delete_endpoint(
+    path: str = Query(..., min_length=1, max_length=4096),
+    recursive: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    try:
+        data = delete_entry(path=path, recursive=recursive)
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=_workspace_files_http_status(e.code),
+            detail={"code": e.code, "message": str(e)},
+        ) from e
+    emit_audit(
+        db,
+        "files.delete",
+        payload={"path": data["path"], "recursive": data["recursive"]},
+    )
+    return WorkspaceFileDeleteResponse(**data)
+
+
 @router.get("/api/workspace/patches", response_model=List[PatchResponse])
-def list_patches_endpoint():
-    return [PatchResponse(**p) for p in list_pending()]
+def list_patches_endpoint(session_id: Optional[str] = None):
+    return [PatchResponse(**p) for p in list_pending(session_id)]
 
 
 @router.post("/api/workspace/patches/{patch_id}/apply", response_model=PatchResponse)
@@ -837,8 +1431,8 @@ async def retry_patch_endpoint(patch_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/api/workspace/shells", response_model=List[ShellResponse])
-def list_shells_endpoint():
-    return [ShellResponse(**s) for s in list_pending_shells()]
+def list_shells_endpoint(session_id: Optional[str] = None):
+    return [ShellResponse(**s) for s in list_pending_shells(session_id)]
 
 
 @router.post("/api/workspace/shells/{shell_id}/apply", response_model=ShellResponse)
@@ -904,28 +1498,85 @@ async def retry_shell_endpoint(shell_id: str, db: Session = Depends(get_db)):
 @router.post("/api/sessions", response_model=SessionResponse)
 def create_session_endpoint(request: CreateSessionRequest, db: Session = Depends(get_db)):
     session = create_session(db, title=request.title, workspace_root=request.workspace_root)
-    return SessionResponse(
-        id=session.id,
-        title=session.title,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-        workspace_root=session.workspace_root,
-    )
+    return _session_to_response(session)
 
 
-@router.patch("/api/sessions/{session_id}", response_model=SessionResponse)
-def update_session_endpoint(session_id: str, request: CreateSessionRequest, db: Session = Depends(get_db)):
+@router.get("/api/sessions/{session_id}", response_model=SessionResponse)
+def get_session_endpoint(session_id: str, db: Session = Depends(get_db)):
     session = get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    session = update_session_title(db, session, request.title)
-    return SessionResponse(
-        id=session.id,
-        title=session.title,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-        workspace_root=session.workspace_root,
-    )
+    return _session_to_response(session)
+
+
+@router.patch("/api/sessions/{session_id}", response_model=SessionResponse)
+def update_session_endpoint(session_id: str, request: UpdateSessionRequest, db: Session = Depends(get_db)):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if request.title is not None:
+        session = update_session_title(db, session, request.title.strip())
+    if request.title_locked is True:
+        session.title_locked = True
+        session.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(session)
+    if request.goal_mode is not None:
+        session = update_session_goal_mode(db, session, request.goal_mode)
+    if "workspace_root" in request.model_fields_set:
+        root = (request.workspace_root or "").strip()
+        if not root:
+            raise HTTPException(
+                status_code=400,
+                detail="Unbinding is not supported; workspace_root is required",
+            )
+        try:
+            session = update_session_workspace_root(db, session, root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if "profile_id" in request.model_fields_set or "model_id" in request.model_fields_set:
+        if "profile_id" in request.model_fields_set:
+            pid = (request.profile_id or "").strip()
+            if pid and model_registry.resolve_handle(pid) is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "PROFILE_NOT_FOUND", "message": "档案不存在或已停用"},
+                )
+            session.profile_id = pid or None
+        if "model_id" in request.model_fields_set:
+            session.model_id = (request.model_id or "").strip() or None
+        session.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(session)
+    if "pinned_goal" in request.model_fields_set:
+        from agent_window.agent.goal import (
+            goals_equal,
+            normalize_pinned_goal,
+            previous_turn_goal_from_messages,
+        )
+
+        new_pin = normalize_pinned_goal(request.pinned_goal)
+        old_pin = getattr(session, "pinned_goal", None)
+        changed = not goals_equal(old_pin, new_pin)
+        if changed or (old_pin or None) != new_pin:
+            session = update_session_pinned_goal(db, session, new_pin)
+        if changed and new_pin:
+            prev = old_pin
+            if not prev:
+                path = build_path_from_session(session)
+                prev = previous_turn_goal_from_messages(path)
+            if not goals_equal(prev, new_pin):
+                emit_audit(
+                    db,
+                    "goal.change",
+                    payload={
+                        "previous_goal": prev,
+                        "goal": new_pin,
+                        "source": "manual",
+                    },
+                    session_id=session_id,
+                )
+    return _session_to_response(session)
 
 
 @router.delete("/api/sessions/{session_id}")
@@ -969,23 +1620,30 @@ def list_favorites_endpoint(db: Session = Depends(get_db)):
 @router.get("/api/sessions", response_model=List[SessionResponse])
 def list_sessions_endpoint(db: Session = Depends(get_db)):
     sessions = list_sessions(db)
-    return [
-        SessionResponse(
-            id=s.id,
-            title=s.title,
-            created_at=s.created_at,
-            updated_at=s.updated_at,
-            workspace_root=s.workspace_root,
-        )
-        for s in sessions
-    ]
+    return [_session_to_response(s) for s in sessions]
 
 
 @router.get("/api/sessions/{session_id}/messages", response_model=List[MessageResponse])
-def get_messages_endpoint(session_id: str, db: Session = Depends(get_db)):
+def get_messages_endpoint(
+    session_id: str,
+    view: str = Query(
+        "all",
+        description="all = every message (incl. abandoned siblings); active = leaf→root path only",
+    ),
+    db: Session = Depends(get_db),
+):
     session = get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    view_norm = (view or "all").strip().lower()
+    if view_norm == "active":
+        path = build_path_from_session(session)
+        return [_message_to_response(m) for m in path]
+    if view_norm != "all":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_VIEW", "message": "view must be 'all' or 'active'"},
+        )
     existing_messages = sorted(session.messages, key=lambda m: m.sequence)
     return [_message_to_response(m) for m in existing_messages]
 
@@ -1074,9 +1732,6 @@ async def send_message_endpoint(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if not provider.is_available():
-        raise HTTPException(status_code=503, detail="LLM provider not configured")
-
     try:
         cancel_event = try_begin_turn(session_id)
     except SessionBusyError:
@@ -1086,8 +1741,11 @@ async def send_message_endpoint(
         )
 
     try:
+        # Path to current leaf before appending this turn (LLM history base)
+        prior_path = build_path_from_session(session)
         existing_messages = sorted(session.messages, key=lambda m: m.sequence)
         next_sequence = (existing_messages[-1].sequence + 1) if existing_messages else 1
+        parent_for_user = session.leaf_id
 
         attachment_ids = list(request.attachment_ids or [])
         metas = list_metas_for_ids(session, attachment_ids) if attachment_ids else []
@@ -1102,6 +1760,28 @@ async def send_message_endpoint(
         content_for_model = build_content_for_model(request.content or "", metas)
         attachments_json = json.dumps(metas, ensure_ascii=False) if metas else "[]"
 
+        agent_cfg = load_agent_settings()
+        bound_model, model_fallback, _turn_profile = _bind_turn_model(session, request.model, db)
+        if not provider.profile_is_ready(_turn_profile):
+            raise HTTPException(status_code=503, detail="LLM provider not configured")
+
+        async def _summarize_for_turn(blob: str) -> str:
+            return await _summarize_blob(blob, _turn_profile)
+
+        try:
+            model_name = resolve_model_for_attachments(
+                bound_model,
+                metas,
+                vision_model=agent_cfg.get("vision_model"),
+            )
+        except AttachmentError as e:
+            if e.code == "VISION_MODEL_REQUIRED":
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": e.code, "message": str(e)},
+                ) from e
+            raise
+
         user_message = add_message(
             db,
             session,
@@ -1109,61 +1789,74 @@ async def send_message_endpoint(
             content_for_model,
             next_sequence,
             attachments=attachments_json,
+            parent_id=parent_for_user,
         )
         assistant_sequence = next_sequence + 1
         assistant_message = add_message(
-            db, session, Role.ASSISTANT, "", assistant_sequence, summary="", trace="[]",
+            db,
+            session,
+            Role.ASSISTANT,
+            "",
+            assistant_sequence,
+            summary="",
+            trace="[]",
+            parent_id=user_message.id,
         )
 
-        system_prompt = _system_prompt()
-        memory_injected = bool(read_user_md().strip())
-
-        chat_messages: List[dict] = [{"role": "system", "content": system_prompt}]
-        for m in existing_messages:
-            content = (m.content or "").strip()
-            if not content:
-                continue
-            chat_messages.append({"role": m.role.value, "content": content})
-        chat_messages.append({"role": "user", "content": content_for_model})
-
-        prev_goal = previous_turn_goal_from_messages(existing_messages)
-        turn_goal = extract_turn_goal(
-            content_for_model,
-            prior_user_texts_from_history(existing_messages),
+        system_prompt = _system_prompt(session_id)
+        memory_injected = bool(
+            get_frozen_user_md(session_id).strip() or get_frozen_memory_md(session_id).strip()
         )
-        goal_changed = bool(prev_goal) and not goals_equal(prev_goal, turn_goal)
-        if goal_changed:
-            _audit(
-                "goal.change",
-                {
-                    "previous_goal": prev_goal,
-                    "goal": turn_goal,
-                    "source": "extract",
-                },
-                session_id=session_id,
-            )
 
-        agent_cfg = load_agent_settings()
-        chat_messages, compressed = await compress_messages_if_needed(
+        loop_cfg = LoopConfig.from_settings(
+            goal_mode=bool(getattr(session, "goal_mode", False)),
+            preset=agent_cfg.get("loop_preset", "yolo"),
+        )
+        chat_messages = build_llm_messages(
+            prior_path,
+            convert_to_llm=loop_cfg.convert_to_llm,
+            system_prompt=system_prompt,
+        )
+        chat_messages.append(build_user_chat_message(session, request.content or "", metas))
+
+        prev_goal_for_stream: str | None
+        turn_goal, prev_goal_for_stream, _goal_changed = _resolve_turn_goal_for_session(
+            session,
+            user_text=content_for_model,
+            history_messages=list(prior_path),
+            audit_source="extract",
+            session_id=session_id,
+        )
+
+        chat_messages, compressed, compress_meta = await compress_messages_if_needed(
             chat_messages,
             auto_compress=agent_cfg["auto_compress"],
             context_limit=agent_cfg["context_limit"],
-            summarize=_summarize_blob if provider.is_available() else None,
+            summarize=_summarize_for_turn,
             preserve_goal=turn_goal,
         )
         if compressed:
             _audit(
                 "context.compress",
-                {"session_id": session_id, "goal_preserved": bool(turn_goal)},
+                {
+                    "session_id": session_id,
+                    "goal_preserved": bool(turn_goal),
+                    "method": compress_meta.method,
+                    "older_count": compress_meta.older_count,
+                    "used_previous_summary": compress_meta.used_previous_summary,
+                    "preview": compress_meta.summary_preview,
+                },
                 session_id=session_id,
             )
 
-        model_name = request.model or settings.llm_model
         prompt_tokens = approx_messages_tokens(chat_messages)
         started = time.time()
 
         async def event_stream():
             async def produce():
+                from agent_window.services.provider import turn_profile_id
+
+                turn_profile_id.set(_turn_profile or None)
                 session_local = get_sessionmaker()()
                 try:
                     async for line in _agent_turn_event_stream(
@@ -1174,8 +1867,8 @@ async def send_message_endpoint(
                         assistant_message_id=assistant_message.id,
                         chat_messages=chat_messages,
                         turn_goal=turn_goal,
-                        previous_goal=prev_goal if goal_changed else None,
-                        model=request.model,
+                        previous_goal=prev_goal_for_stream,
+                        model=model_name,
                         model_name=model_name,
                         cancel_event=cancel_event,
                         compressed=compressed,
@@ -1184,6 +1877,10 @@ async def send_message_endpoint(
                         started=started,
                         http_request=http_request,
                         agent_cfg=agent_cfg,
+                        compress_method=compress_meta.method if compressed else None,
+                        compress_preview=compress_meta.summary_preview if compressed else None,
+                        model_fallback=model_fallback,
+                        fallback_profile_id=_turn_profile or None,
                     ):
                         yield line
                 finally:
@@ -1211,8 +1908,6 @@ async def regenerate_endpoint(
     session = get_session(db, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    if not provider.is_available():
-        raise HTTPException(status_code=503, detail="LLM provider not configured")
 
     try:
         cancel_event = try_begin_turn(session_id)
@@ -1223,74 +1918,128 @@ async def regenerate_endpoint(
         )
 
     try:
-        existing_messages = sorted(session.messages, key=lambda m: m.sequence)
-        if not existing_messages:
+        # Regenerate = branch: keep old assistant; new sibling under same user; update leaf
+        leaf_path = build_path_from_session(session)
+        if not leaf_path:
             raise HTTPException(status_code=400, detail="No messages to regenerate")
 
-        # Drop trailing assistant if present (failed/partial prior attempt)
-        if existing_messages[-1].role == Role.ASSISTANT:
-            delete_message(db, existing_messages[-1])
-            existing_messages = existing_messages[:-1]
+        user_message = last_user_on_path(leaf_path)
+        if user_message is None:
+            # Compat: last user by sequence
+            by_seq = sorted(session.messages, key=lambda m: m.sequence)
+            for m in reversed(by_seq):
+                if m.role == Role.USER:
+                    user_message = m
+                    break
+        if user_message is None:
+            raise HTTPException(status_code=400, detail="No user turn to regenerate")
 
-        if not existing_messages or existing_messages[-1].role != Role.USER:
-            raise HTTPException(status_code=400, detail="Last message must be a user turn")
+        history_path = path_ending_at(leaf_path, user_message.id)
+        if not history_path or history_path[-1].id != user_message.id:
+            history_path = path_ending_at(build_path_from_session(session, user_message.id), user_message.id)
+        history = history_path[:-1]
 
-        user_message = existing_messages[-1]
-        history = existing_messages[:-1]
         model = payload.model
-
-        system_prompt = _system_prompt()
-        memory_injected = bool(read_user_md().strip())
-        chat_messages: List[dict] = [{"role": "system", "content": system_prompt}]
-        for m in history:
-            content = (m.content or "").strip()
-            if not content:
-                continue
-            chat_messages.append({"role": m.role.value, "content": content})
-        chat_messages.append({"role": "user", "content": user_message.content})
-
-        prev_goal = previous_turn_goal_from_messages(history)
-        turn_goal = extract_turn_goal(
-            user_message.content or "",
-            prior_user_texts_from_history(history),
-        )
-        goal_changed = bool(prev_goal) and not goals_equal(prev_goal, turn_goal)
-        if goal_changed:
-            _audit(
-                "goal.change",
-                {
-                    "previous_goal": prev_goal,
-                    "goal": turn_goal,
-                    "source": "regenerate",
-                },
-                session_id=session_id,
-            )
+        metas = parse_attachments_json(getattr(user_message, "attachments", None))
+        # Prefer live metas from disk so image bytes can be re-injected.
+        if metas:
+            live = list_metas_for_ids(session, [str(m["id"]) for m in metas])
+            if len(live) == len(metas):
+                metas = live
 
         agent_cfg = load_agent_settings()
-        chat_messages, compressed = await compress_messages_if_needed(
+        bound_model, model_fallback, _turn_profile = _bind_turn_model(session, model, db)
+        if not provider.profile_is_ready(_turn_profile):
+            raise HTTPException(status_code=503, detail="LLM provider not configured")
+
+        async def _summarize_for_turn(blob: str) -> str:
+            return await _summarize_blob(blob, _turn_profile)
+
+        try:
+            model_name = resolve_model_for_attachments(
+                bound_model,
+                metas,
+                vision_model=agent_cfg.get("vision_model"),
+            )
+        except AttachmentError as e:
+            if e.code == "VISION_MODEL_REQUIRED":
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": e.code, "message": str(e)},
+                ) from e
+            raise
+
+        system_prompt = _system_prompt(session_id)
+        memory_injected = bool(
+            get_frozen_user_md(session_id).strip() or get_frozen_memory_md(session_id).strip()
+        )
+        loop_cfg = LoopConfig.from_settings(
+            goal_mode=bool(getattr(session, "goal_mode", False)),
+            preset=agent_cfg.get("loop_preset", "yolo"),
+        )
+        chat_messages = build_llm_messages(
+            history,
+            convert_to_llm=loop_cfg.convert_to_llm,
+            system_prompt=system_prompt,
+        )
+        # Strip appendix from stored content when rebuilding multimodal from metas.
+        user_text = (user_message.content or "")
+        marker = "\n\n[附件]"
+        if marker in user_text:
+            user_text = user_text.split(marker, 1)[0]
+        elif user_text.startswith("（见附件）"):
+            user_text = ""
+        chat_messages.append(build_user_chat_message(session, user_text, metas))
+
+        turn_goal, prev_goal_for_stream, _goal_changed = _resolve_turn_goal_for_session(
+            session,
+            user_text=user_message.content or "",
+            history_messages=list(history),
+            audit_source="regenerate",
+            session_id=session_id,
+        )
+
+        chat_messages, compressed, compress_meta = await compress_messages_if_needed(
             chat_messages,
             auto_compress=agent_cfg["auto_compress"],
             context_limit=agent_cfg["context_limit"],
-            summarize=_summarize_blob if provider.is_available() else None,
+            summarize=_summarize_for_turn,
             preserve_goal=turn_goal,
         )
         if compressed:
             _audit(
                 "context.compress",
-                {"session_id": session_id, "goal_preserved": bool(turn_goal)},
+                {
+                    "session_id": session_id,
+                    "goal_preserved": bool(turn_goal),
+                    "method": compress_meta.method,
+                    "older_count": compress_meta.older_count,
+                    "used_previous_summary": compress_meta.used_previous_summary,
+                    "preview": compress_meta.summary_preview,
+                },
                 session_id=session_id,
             )
 
-        model_name = model or settings.llm_model
         prompt_tokens = approx_messages_tokens(chat_messages)
-        assistant_sequence = user_message.sequence + 1
+        all_msgs = sorted(session.messages, key=lambda m: m.sequence)
+        assistant_sequence = (all_msgs[-1].sequence + 1) if all_msgs else (user_message.sequence + 1)
         assistant_message = add_message(
-            db, session, Role.ASSISTANT, "", assistant_sequence, summary="", trace="[]",
+            db,
+            session,
+            Role.ASSISTANT,
+            "",
+            assistant_sequence,
+            summary="",
+            trace="[]",
+            parent_id=user_message.id,
         )
         started = time.time()
 
         async def event_stream():
             async def produce():
+                from agent_window.services.provider import turn_profile_id
+
+                turn_profile_id.set(_turn_profile or None)
                 session_local = get_sessionmaker()()
                 try:
                     async for line in _agent_turn_event_stream(
@@ -1301,8 +2050,8 @@ async def regenerate_endpoint(
                         assistant_message_id=assistant_message.id,
                         chat_messages=chat_messages,
                         turn_goal=turn_goal,
-                        previous_goal=prev_goal if goal_changed else None,
-                        model=model,
+                        previous_goal=prev_goal_for_stream,
+                        model=model_name,
                         model_name=model_name,
                         cancel_event=cancel_event,
                         compressed=compressed,
@@ -1311,6 +2060,10 @@ async def regenerate_endpoint(
                         started=started,
                         http_request=http_request,
                         agent_cfg=agent_cfg,
+                        compress_method=compress_meta.method if compressed else None,
+                        compress_preview=compress_meta.summary_preview if compressed else None,
+                        model_fallback=model_fallback,
+                        fallback_profile_id=_turn_profile or None,
                     ):
                         yield line
                 finally:

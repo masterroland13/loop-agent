@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import os
+import platform
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +21,8 @@ MAX_READ_BYTES = 100_000
 MAX_LIST_ENTRIES = 200
 MAX_GREP_MATCHES = 40
 MAX_GREP_FILE_BYTES = 1_000_000
+# Human Files editor — larger than agent read_file window; still bounded.
+MAX_EDITOR_BYTES = 2_000_000
 
 _SKIP_DIR_NAMES = {
     ".git",
@@ -201,6 +208,511 @@ def read_file(
         "truncated": len(raw) > MAX_READ_BYTES or end < total,
         "content": numbered,
     }
+
+
+def read_text_file(path: str) -> Dict[str, Any]:
+    """Full-file UTF-8 read for the human Files panel (no line-number prefixes).
+
+    Does not replace agent ``read_file``, which returns numbered windows.
+    """
+    target = resolve_in_workspace(path)
+    if not target.exists():
+        raise WorkspaceError(f"not found: {path}", "NOT_FOUND")
+    if not target.is_file():
+        raise WorkspaceError(f"not a file: {path}", "NOT_A_FILE")
+
+    try:
+        st = target.stat()
+        raw = target.read_bytes()
+    except OSError as e:
+        raise WorkspaceError(str(e), "READ_ERROR") from e
+
+    if b"\x00" in raw[:4096]:
+        raise WorkspaceError("binary file; refuse to read", "BINARY")
+
+    if len(raw) > MAX_EDITOR_BYTES:
+        raise WorkspaceError(
+            f"file too large for editor (>{MAX_EDITOR_BYTES} bytes)",
+            "TOO_LARGE",
+        )
+
+    text = raw.decode("utf-8", errors="replace")
+    root = require_root()
+    return {
+        "path": str(target.relative_to(root)).replace("\\", "/"),
+        "content": text,
+        "mtime_ns": int(st.st_mtime_ns),
+        "size": int(st.st_size),
+        "encoding": "utf-8",
+    }
+
+
+def is_docx_editor_path(path: str) -> bool:
+    return path.lower().endswith(".docx")
+
+
+def _docx_bytes_to_html(raw: bytes) -> str:
+    import mammoth
+
+    result = mammoth.convert_to_html(io.BytesIO(raw))
+    return result.value
+
+
+def read_docx_file(path: str) -> Dict[str, Any]:
+    """Convert .docx to HTML for the Files panel (human editor, not agent tools)."""
+    target = resolve_in_workspace(path)
+    if not target.exists():
+        raise WorkspaceError(f"not found: {path}", "NOT_FOUND")
+    if not target.is_file():
+        raise WorkspaceError(f"not a file: {path}", "NOT_A_FILE")
+
+    try:
+        st = target.stat()
+        raw = target.read_bytes()
+    except OSError as e:
+        raise WorkspaceError(str(e), "READ_ERROR") from e
+
+    if len(raw) > MAX_EDITOR_BYTES:
+        raise WorkspaceError(
+            f"file too large for editor (>{MAX_EDITOR_BYTES} bytes)",
+            "TOO_LARGE",
+        )
+
+    try:
+        html = _docx_bytes_to_html(raw)
+    except Exception as e:
+        raise WorkspaceError(f"docx read failed: {e}", "READ_ERROR") from e
+
+    root = require_root()
+    return {
+        "path": str(target.relative_to(root)).replace("\\", "/"),
+        "content": html,
+        "mtime_ns": int(st.st_mtime_ns),
+        "size": int(st.st_size),
+        "encoding": "docx-html",
+    }
+
+
+def read_editor_file(path: str) -> Dict[str, Any]:
+    if is_docx_editor_path(path):
+        return read_docx_file(path)
+    return read_text_file(path)
+
+
+def write_text_file(
+    path: str,
+    content: str,
+    if_match_mtime_ns: int | None = None,
+    if_match_base_content: str | None = None,
+) -> Dict[str, Any]:
+    """Direct UTF-8 write for the human Files panel (scheme A — not propose_edit)."""
+    if content is None:
+        raise WorkspaceError("content is required", "INVALID")
+    if not isinstance(content, str):
+        raise WorkspaceError("content must be a string", "INVALID")
+
+    target = resolve_in_workspace(path)
+    root = require_root()
+
+    if target.exists() and target.is_dir():
+        raise WorkspaceError(f"not a file: {path}", "NOT_A_FILE")
+
+    if if_match_mtime_ns is not None:
+        if not target.exists():
+            raise WorkspaceError("file disappeared; abort", "CONFLICT")
+        try:
+            current = int(target.stat().st_mtime_ns)
+        except OSError as e:
+            raise WorkspaceError(str(e), "READ_ERROR") from e
+        if current != int(if_match_mtime_ns):
+            if if_match_base_content is None:
+                raise WorkspaceError(
+                    "file changed on disk since last read; abort",
+                    "CONFLICT",
+                )
+            try:
+                disk_text = target.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                raise WorkspaceError(str(e), "READ_ERROR") from e
+            if disk_text != if_match_base_content:
+                raise WorkspaceError(
+                    "file changed on disk since last read; abort",
+                    "CONFLICT",
+                )
+
+    data = content.encode("utf-8")
+    if len(data) > MAX_EDITOR_BYTES:
+        raise WorkspaceError(
+            f"content too large for editor (>{MAX_EDITOR_BYTES} bytes)",
+            "TOO_LARGE",
+        )
+
+    parent = target.parent
+    if not parent.exists() or not parent.is_dir():
+        raise WorkspaceError(f"parent directory not found: {path}", "NOT_FOUND")
+
+    try:
+        target.write_bytes(data)
+        st = target.stat()
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+
+    return {
+        "path": str(target.relative_to(root)).replace("\\", "/"),
+        "mtime_ns": int(st.st_mtime_ns),
+        "size": int(st.st_size),
+    }
+
+
+def write_docx_file(
+    path: str,
+    html_content: str,
+    if_match_mtime_ns: int | None = None,
+    if_match_base_content: str | None = None,
+) -> Dict[str, Any]:
+    """Write HTML body back to .docx (simple documents; layout may shift)."""
+    if html_content is None:
+        raise WorkspaceError("content is required", "INVALID")
+    if not isinstance(html_content, str):
+        raise WorkspaceError("content must be a string", "INVALID")
+
+    target = resolve_in_workspace(path)
+    root = require_root()
+
+    if target.exists() and target.is_dir():
+        raise WorkspaceError(f"not a file: {path}", "NOT_A_FILE")
+
+    if if_match_mtime_ns is not None:
+        if not target.exists():
+            raise WorkspaceError("file disappeared; abort", "CONFLICT")
+        try:
+            current = int(target.stat().st_mtime_ns)
+        except OSError as e:
+            raise WorkspaceError(str(e), "READ_ERROR") from e
+        if current != int(if_match_mtime_ns):
+            if if_match_base_content is None:
+                raise WorkspaceError(
+                    "file changed on disk since last read; abort",
+                    "CONFLICT",
+                )
+            try:
+                disk_html = _docx_bytes_to_html(target.read_bytes())
+            except OSError as e:
+                raise WorkspaceError(str(e), "READ_ERROR") from e
+            if disk_html != if_match_base_content:
+                raise WorkspaceError(
+                    "file changed on disk since last read; abort",
+                    "CONFLICT",
+                )
+
+    from docx import Document
+    from htmldocx import HtmlToDocx
+
+    document = Document()
+    HtmlToDocx().add_html_to_document(html_content, document)
+
+    buf = io.BytesIO()
+    try:
+        document.save(buf)
+        data = buf.getvalue()
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+
+    if len(data) > MAX_EDITOR_BYTES:
+        raise WorkspaceError(
+            f"content too large for editor (>{MAX_EDITOR_BYTES} bytes)",
+            "TOO_LARGE",
+        )
+
+    parent = target.parent
+    if not parent.exists() or not parent.is_dir():
+        raise WorkspaceError(f"parent directory not found: {path}", "NOT_FOUND")
+
+    try:
+        target.write_bytes(data)
+        st = target.stat()
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+
+    return {
+        "path": str(target.relative_to(root)).replace("\\", "/"),
+        "mtime_ns": int(st.st_mtime_ns),
+        "size": int(st.st_size),
+    }
+
+
+def write_editor_file(
+    path: str,
+    content: str,
+    if_match_mtime_ns: int | None = None,
+    if_match_base_content: str | None = None,
+    encoding: str = "utf-8",
+) -> Dict[str, Any]:
+    enc = (encoding or "utf-8").strip().lower()
+    if enc == "docx-html" or is_docx_editor_path(path):
+        return write_docx_file(
+            path,
+            content,
+            if_match_mtime_ns=if_match_mtime_ns,
+            if_match_base_content=if_match_base_content,
+        )
+    return write_text_file(
+        path,
+        content,
+        if_match_mtime_ns=if_match_mtime_ns,
+        if_match_base_content=if_match_base_content,
+    )
+
+
+def mkdir_directory(path: str) -> Dict[str, Any]:
+    """Create a single directory under the workspace (parent must exist)."""
+    target = resolve_in_workspace(path)
+    root = require_root()
+    if target.exists():
+        raise WorkspaceError(f"already exists: {path}", "EXISTS")
+    parent = target.parent
+    if not parent.exists() or not parent.is_dir():
+        raise WorkspaceError(f"parent directory not found: {path}", "NOT_FOUND")
+    try:
+        target.mkdir(parents=False)
+    except FileExistsError:
+        raise WorkspaceError(f"already exists: {path}", "EXISTS") from None
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+    rel = str(target.relative_to(root)).replace("\\", "/")
+    return {"path": rel}
+
+
+def rename_entry(from_path: str, to_path: str) -> Dict[str, Any]:
+    """Rename a file or directory within the workspace."""
+    src_rel = (from_path or "").strip()
+    dst_rel = (to_path or "").strip()
+    if not src_rel or not dst_rel:
+        raise WorkspaceError("from and to paths are required", "INVALID")
+    if src_rel == dst_rel:
+        resolved = resolve_in_workspace(src_rel)
+        root = require_root()
+        if not resolved.exists():
+            raise WorkspaceError(f"not found: {src_rel}", "NOT_FOUND")
+        rel = str(resolved.relative_to(root)).replace("\\", "/")
+        return {"from": src_rel, "path": rel}
+
+    src = resolve_in_workspace(src_rel)
+    dst = resolve_in_workspace(dst_rel)
+    root = require_root()
+    if not src.exists():
+        raise WorkspaceError(f"not found: {src_rel}", "NOT_FOUND")
+    if dst.exists():
+        raise WorkspaceError(f"already exists: {dst_rel}", "EXISTS")
+    _assert_destination_parent(dst)
+    _assert_not_descendant_move(src, dst)
+    try:
+        src.rename(dst)
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+    rel = str(dst.relative_to(root)).replace("\\", "/")
+    return {"from": src_rel, "path": rel}
+
+
+def _rel_to_root(target: Path, root: Path) -> str:
+    return str(target.relative_to(root)).replace("\\", "/")
+
+
+def _assert_destination_parent(dst: Path) -> None:
+    parent = dst.parent
+    if not parent.exists() or not parent.is_dir():
+        raise WorkspaceError(f"parent directory not found: {dst}", "NOT_FOUND")
+
+
+def _assert_not_descendant_move(src: Path, dst: Path) -> None:
+    if src == dst:
+        raise WorkspaceError("source and destination are the same", "INVALID")
+    if not src.is_dir():
+        return
+    try:
+        dst.relative_to(src)
+    except ValueError:
+        return
+    raise WorkspaceError(
+        "cannot move or copy a directory into itself or its descendant",
+        "INVALID",
+    )
+
+
+def tree_stats(path: str) -> Dict[str, Any]:
+    """Count files and subdirectories under a workspace directory."""
+    target = resolve_in_workspace(path)
+    root = require_root()
+    if not target.exists():
+        raise WorkspaceError(f"not found: {path}", "NOT_FOUND")
+    if not target.is_dir():
+        raise WorkspaceError(f"not a directory: {path}", "NOT_A_DIR")
+
+    file_count = 0
+    dir_count = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(target):
+            dir_count += len(dirnames)
+            file_count += len(filenames)
+    except OSError as e:
+        raise WorkspaceError(str(e), "READ_ERROR") from e
+
+    return {
+        "path": _rel_to_root(target, root),
+        "file_count": file_count,
+        "dir_count": dir_count,
+    }
+
+
+def copy_entry(from_path: str, to_path: str) -> Dict[str, Any]:
+    """Copy a file or directory tree within the workspace."""
+    src_rel = (from_path or "").strip()
+    dst_rel = (to_path or "").strip()
+    if not src_rel or not dst_rel:
+        raise WorkspaceError("from and to paths are required", "INVALID")
+
+    src = resolve_in_workspace(src_rel)
+    dst = resolve_in_workspace(dst_rel)
+    root = require_root()
+    if not src.exists():
+        raise WorkspaceError(f"not found: {src_rel}", "NOT_FOUND")
+    if dst.exists():
+        raise WorkspaceError(f"already exists: {dst_rel}", "EXISTS")
+    _assert_destination_parent(dst)
+    _assert_not_descendant_move(src, dst)
+
+    try:
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    except OSError as e:
+        raise WorkspaceError(str(e), "WRITE_ERROR") from e
+
+    return {"from": src_rel, "path": _rel_to_root(dst, root)}
+
+
+def delete_entry(path: str, recursive: bool = False) -> Dict[str, Any]:
+    """Delete a file or directory within the workspace."""
+    target = resolve_in_workspace(path)
+    root = require_root()
+    if not target.exists():
+        raise WorkspaceError(f"not found: {path}", "NOT_FOUND")
+    rel = _rel_to_root(target, root)
+    if target.is_dir():
+        try:
+            children = list(target.iterdir())
+        except OSError as e:
+            raise WorkspaceError(str(e), "READ_ERROR") from e
+        if children and not recursive:
+            raise WorkspaceError(f"directory not empty: {path}", "NOT_EMPTY")
+        try:
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+        except OSError as e:
+            raise WorkspaceError(str(e), "WRITE_ERROR") from e
+    else:
+        try:
+            target.unlink()
+        except OSError as e:
+            raise WorkspaceError(str(e), "WRITE_ERROR") from e
+    return {"path": rel, "recursive": bool(recursive)}
+
+
+def _in_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+def _to_windows_path(linux_path: str) -> str | None:
+    wslpath = shutil.which("wslpath")
+    if not wslpath:
+        return None
+    try:
+        proc = subprocess.run(
+            [wslpath, "-w", linux_path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip()
+    return out or None
+
+
+def _explorer_exe() -> str | None:
+    found = shutil.which("explorer.exe")
+    if found:
+        return found
+    win_explorer = Path("/mnt/c/Windows/explorer.exe")
+    if win_explorer.is_file():
+        return str(win_explorer)
+    return None
+
+
+def _reveal_argv(target: Path) -> list[str]:
+    """Build argv for opening the host file manager."""
+    abs_path = str(target.resolve())
+    is_file = target.is_file()
+    system = platform.system()
+
+    if system == "Windows":
+        if is_file:
+            return ["explorer", "/select,", abs_path]
+        return ["explorer", abs_path]
+
+    if system == "Darwin":
+        return ["open", "-R", abs_path]
+
+    # Linux — WSL should open Windows Explorer, not xdg-open (often missing).
+    if _in_wsl():
+        win_path = _to_windows_path(abs_path)
+        explorer = _explorer_exe()
+        if win_path and explorer:
+            if is_file:
+                return [explorer, "/select,", win_path]
+            return [explorer, win_path]
+
+    reveal = str(target.parent.resolve() if is_file else target.resolve())
+    xdg = shutil.which("xdg-open")
+    if xdg:
+        return [xdg, reveal]
+    gio = shutil.which("gio")
+    if gio:
+        return [gio, "open", reveal]
+
+    raise WorkspaceError(
+        "无法在资源管理器中打开：未找到 explorer.exe / xdg-open / gio",
+        "REVEAL_FAILED",
+    )
+
+
+def reveal_in_explorer(path: str) -> Dict[str, Any]:
+    """Open the OS file manager and highlight the workspace path."""
+    target = resolve_in_workspace(path)
+    root = require_root()
+    if not target.exists():
+        raise WorkspaceError(f"not found: {path}", "NOT_FOUND")
+
+    argv = _reveal_argv(target)
+    try:
+        subprocess.Popen(argv, close_fds=True)  # noqa: S603
+    except OSError as e:
+        raise WorkspaceError(str(e), "REVEAL_FAILED") from e
+
+    abs_path = str(target.resolve())
+    return {"path": _rel_to_root(target, root), "revealed": abs_path}
 
 
 def grep_search(

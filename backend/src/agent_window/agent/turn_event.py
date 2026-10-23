@@ -16,8 +16,20 @@ TURN_EVENT_TYPES = frozenset(
         "progress_checkpoint",
         "turn_goal",
         "gate",
+        "diff",
+        "shell",
+        "memory",
         "token",
         "error",
+        # A3 lifecycle / steering (lightweight trace; ToolTimeline ignores non-tools)
+        "agent_start",
+        "agent_end",
+        "turn_start",
+        "turn_end",
+        "steer_inject",
+        "soft_land",
+        "edit_nudge",
+        "thought",
     }
 )
 
@@ -125,9 +137,18 @@ def event_from_sse(
         name = sse.get("name") or "tool"
         content = sse.get("content") or ""
         status = _tool_status_from_content(content)
-        full_ref, spilled = store_full_ref(content, spill=spill)
+        preexisting = sse.get("full_ref")
+        if isinstance(preexisting, str) and preexisting.strip():
+            full_ref = preexisting.strip()
+            spilled = is_file_ref(full_ref)
+            truncated = spilled or bool(sse.get("truncated"))
+        else:
+            full_ref, spilled = store_full_ref(content, spill=spill)
+            truncated = spilled or bool(sse.get("truncated"))
         if spilled:
             summary = f"{name} · 大输出已落盘（{len(content)} 字符）"
+        elif isinstance(sse.get("summary"), str) and sse["summary"].strip():
+            summary = str(sse["summary"]).strip()
         else:
             summary = _summary_snippet(content)
         return {
@@ -137,7 +158,7 @@ def event_from_sse(
             "status": status,
             "summary": summary,
             "full_ref": full_ref,
-            "truncated": spilled,
+            "truncated": truncated,
             "tool_call_id": sse.get("tool_call_id"),
         }
 
@@ -206,14 +227,141 @@ def event_from_sse(
         elif sse.get("command"):
             parts.append(str(sse["command"]))
         full_ref, spilled = store_full_ref(sse, spill=spill)
-        return {
-            "type": "gate",
+        # Keep original SSE type so Activity hydrate does not depend on unpacking gate.
+        out: dict[str, Any] = {
+            "type": etype,
             "ts": ts,
             "tool": tool,
             "status": str(status),
             "summary": " · ".join(parts),
             "full_ref": full_ref,
             "truncated": spilled or bool(sse.get("truncated")),
+        }
+        for key in (
+            "patch_id",
+            "path",
+            "is_new_file",
+            "is_delete",
+            "error",
+            "shell_id",
+            "command",
+            "argv",
+            "cwd",
+            "exit_code",
+            "memory_id",
+            "target",
+        ):
+            if sse.get(key) is not None:
+                out[key] = sse.get(key)
+        # Small diffs stay inline for +/- counts; large ones live in full_ref only.
+        ud = sse.get("unified_diff")
+        if isinstance(ud, str) and ud and not spilled:
+            out["unified_diff"] = ud
+        return out
+
+    if etype == "agent_start":
+        return {
+            "type": "agent_start",
+            "ts": ts,
+            "summary": "agent_start",
+            "session_id": sse.get("session_id"),
+        }
+
+    if etype == "agent_end":
+        return {
+            "type": "agent_end",
+            "ts": ts,
+            "summary": "agent_end",
+            "session_id": sse.get("session_id"),
+        }
+
+    if etype == "turn_start":
+        idx = sse.get("index")
+        return {
+            "type": "turn_start",
+            "ts": ts,
+            "summary": f"turn_start:{idx}" if idx is not None else "turn_start",
+            "index": idx,
+        }
+
+    if etype == "turn_end":
+        idx = sse.get("index")
+        outcome = sse.get("outcome")
+        parts = ["turn_end"]
+        if idx is not None:
+            parts.append(str(idx))
+        if outcome:
+            parts.append(str(outcome))
+        return {
+            "type": "turn_end",
+            "ts": ts,
+            "summary": ":".join(parts),
+            "index": idx,
+            "outcome": outcome,
+        }
+
+    if etype == "steer_inject":
+        content = (sse.get("content") or "").strip()
+        return {
+            "type": "steer_inject",
+            "ts": ts,
+            "summary": _summary_snippet(content, limit=120) or "steer",
+            "content": content or None,
+        }
+
+    if etype == "soft_land":
+        reason = sse.get("reason") or "max_tool_iters"
+        max_iters = sse.get("max_tool_iters")
+        tools_ran = sse.get("tools_ran")
+        parts = ["soft_land", str(reason)]
+        if max_iters is not None:
+            parts.append(f"cap={max_iters}")
+        if tools_ran is not None:
+            parts.append(f"ran={tools_ran}")
+        return {
+            "type": "soft_land",
+            "ts": ts,
+            "summary": " · ".join(parts),
+            "reason": reason,
+            "max_tool_iters": max_iters,
+            "tools_ran": tools_ran,
+            "goal": sse.get("goal"),
+        }
+
+    if etype == "edit_nudge":
+        reason = sse.get("reason") or "missing_propose_edit"
+        return {
+            "type": "edit_nudge",
+            "ts": ts,
+            "summary": f"edit_nudge · {reason}",
+            "reason": reason,
+            "goal": sse.get("goal"),
+        }
+
+    if etype == "thought":
+        text = (sse.get("text") or sse.get("content") or "").strip()
+        phase = str(sse.get("phase") or "end")
+        duration = sse.get("duration_ms")
+        source = sse.get("source") or "reasoning"
+        summary = "Thought"
+        try:
+            if duration is not None and int(duration) < 1000:
+                summary = "Thought briefly"
+            elif duration is not None:
+                summary = f"Thought {max(1, int(round(int(duration) / 1000)))}s"
+        except (TypeError, ValueError):
+            pass
+        full_ref, spilled = store_full_ref(text, spill=spill) if text else (None, False)
+        return {
+            "type": "thought",
+            "ts": ts,
+            "summary": summary,
+            "phase": phase,
+            "text": None if spilled else (text or None),
+            "full_ref": full_ref,
+            "truncated": spilled,
+            "duration_ms": duration,
+            "source": source,
         }
 
     return None
@@ -324,6 +472,12 @@ def events_to_tool_trace(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 trace.append(item)
         elif etype == "gate" and ev.get("status") == "pending":
+            if trace and trace[-1]["status"] == "running":
+                trace[-1] = {
+                    **trace[-1],
+                    "detail": ev.get("summary") or "等待审批…",
+                }
+        elif etype in ("diff", "shell", "memory") and ev.get("status") == "pending":
             if trace and trace[-1]["status"] == "running":
                 trace[-1] = {
                     **trace[-1],

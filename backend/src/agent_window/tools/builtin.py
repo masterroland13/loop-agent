@@ -13,7 +13,7 @@ from agent_window.tools.registry import registry
 
 
 def _urlopen(url: str, timeout: float = 12):
-    req = urllib.request.Request(url, headers={"User-Agent": "hal-agent/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "loop-agent/0.1"})
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except (ssl.SSLError, urllib.error.URLError) as e:

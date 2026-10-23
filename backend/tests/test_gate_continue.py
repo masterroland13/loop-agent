@@ -10,29 +10,63 @@ import pytest
 
 
 def test_gate_status_sets() -> None:
-    from agent_window.agent.loop import (
-        _GATE_CONTINUE_STATUSES,
-        _GATE_END_STATUSES,
-        _GATE_RETRY_STATUSES,
-        _GATE_STOP_STATUSES,
-        _GATE_SUCCESS_STATUSES,
+    from agent_window.agent.gate_policy import (
+        GATE_CONTINUE_STATUSES,
+        GATE_END_STATUSES,
+        GATE_RETRY_STATUSES,
+        GATE_STOP_STATUSES,
+        GATE_SUCCESS_STATUSES,
     )
 
-    assert "rejected" in _GATE_END_STATUSES
-    assert "partial" in _GATE_END_STATUSES
-    assert "rejected" not in _GATE_RETRY_STATUSES
-    assert _GATE_CONTINUE_STATUSES == _GATE_RETRY_STATUSES
-    assert "failed" in _GATE_RETRY_STATUSES
-    assert "timeout" in _GATE_RETRY_STATUSES
-    assert "cancelled" in _GATE_STOP_STATUSES
-    assert "applied" in _GATE_SUCCESS_STATUSES
-    assert "rejected" not in _GATE_SUCCESS_STATUSES
+    assert "rejected" in GATE_END_STATUSES
+    assert "partial" in GATE_END_STATUSES
+    assert "rejected" not in GATE_RETRY_STATUSES
+    assert GATE_CONTINUE_STATUSES == GATE_RETRY_STATUSES
+    assert "failed" in GATE_RETRY_STATUSES
+    assert "timeout" in GATE_RETRY_STATUSES
+    assert "cancelled" in GATE_STOP_STATUSES
+    assert "applied" in GATE_SUCCESS_STATUSES
+    assert "rejected" not in GATE_SUCCESS_STATUSES
+
+
+def test_resolve_gate_outcome_retry_then_end() -> None:
+    from agent_window.agent.gate_policy import GateAction, resolve_gate_outcome
+
+    first = resolve_gate_outcome(
+        tool_name="propose_shell",
+        result='{"status":"failed","shell_id":"s1","command":"ls","error":"x"}',
+        parsed_result={"status": "failed", "shell_id": "s1", "command": "ls", "error": "x"},
+        status="failed",
+        gate_handled=True,
+        gate_retry_used=False,
+        turn_goal="列目录",
+        cancel_event_set=False,
+    )
+    assert first.action is GateAction.CONTINUE_LOOP
+    assert first.loop_continue is True
+    assert first.mark_gate_retry_used is True
+    body = json.loads(first.result)
+    assert body.get("loop_continue") is True
+
+    second = resolve_gate_outcome(
+        tool_name="propose_shell",
+        result='{"status":"failed","shell_id":"s2","command":"pwd","error":"y"}',
+        parsed_result={"status": "failed", "shell_id": "s2", "command": "pwd", "error": "y"},
+        status="failed",
+        gate_handled=True,
+        gate_retry_used=True,
+        turn_goal=None,
+        cancel_event_set=False,
+    )
+    assert second.action is GateAction.END_TURN
+    assert second.user_message
+    assert "pwd" in second.user_message
 
 
 def test_enrich_only_for_retry_statuses() -> None:
-    from agent_window.agent.loop import _enrich_gate_result_for_continue
+    from agent_window.agent.gate_policy import enrich_gate_result_for_continue
 
-    out = _enrich_gate_result_for_continue(
+    out = enrich_gate_result_for_continue(
         "{}",
         "shell",
         {"status": "failed", "command": "python x.py", "error": "not found"},
@@ -47,9 +81,9 @@ def test_enrich_only_for_retry_statuses() -> None:
 
 
 def test_after_retry_message_mentions_retry() -> None:
-    from agent_window.agent.loop import _gate_user_message
+    from agent_window.agent.gate_policy import gate_user_message
 
-    msg = _gate_user_message(
+    msg = gate_user_message(
         "shell",
         {"status": "failed", "command": "pwd", "error": "boom"},
         after_retry=True,
@@ -80,6 +114,7 @@ def _patch_loop_basics(monkeypatch: pytest.MonkeyPatch, loop_mod: Any, tool_name
 
 def test_reject_ends_with_template(monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_window.agent import loop as loop_mod
+    from agent_window.core.loop_config import LoopConfig
     from agent_window.services.provider import provider
 
     calls: List[Any] = []
@@ -112,6 +147,7 @@ def test_reject_ends_with_template(monkeypatch: pytest.MonkeyPatch) -> None:
         async for ev in loop_mod.run_agent_loop(
             [{"role": "user", "content": "改 x.py"}],
             goal="修好 x.py",
+            config=LoopConfig.default().with_preset("trusted").with_goal_mode(True),
         ):
             events.append(ev)
         return events
@@ -126,6 +162,7 @@ def test_reject_ends_with_template(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_failed_continues_once_then_ends(monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_window.agent import loop as loop_mod
+    from agent_window.core.loop_config import LoopConfig
     from agent_window.services.provider import provider
 
     calls: List[Dict[str, Any]] = []
@@ -179,7 +216,10 @@ def test_failed_continues_once_then_ends(monkeypatch: pytest.MonkeyPatch) -> Non
 
     async def _run():
         events = []
-        async for ev in loop_mod.run_agent_loop([{"role": "user", "content": "列目录"}]):
+        async for ev in loop_mod.run_agent_loop(
+            [{"role": "user", "content": "列目录"}],
+            config=LoopConfig.default().with_preset("trusted"),
+        ):
             events.append(ev)
         return events
 
@@ -196,6 +236,7 @@ def test_failed_continues_once_then_ends(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_loop_stops_on_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_window.agent import loop as loop_mod
+    from agent_window.core.loop_config import LoopConfig
     from agent_window.services.provider import provider
 
     async def fake_chat(messages, tools=None, model=None):
@@ -222,7 +263,10 @@ def test_loop_stops_on_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def _run():
         events = []
-        async for ev in loop_mod.run_agent_loop([{"role": "user", "content": "跑 pwd"}]):
+        async for ev in loop_mod.run_agent_loop(
+            [{"role": "user", "content": "跑 pwd"}],
+            config=LoopConfig.default().with_preset("trusted"),
+        ):
             events.append(ev)
         return events
 

@@ -1,24 +1,31 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  activateModelProfile,
+  createModelProfile,
+  deleteModelProfile,
   fetchAssets,
   fetchAudit,
-  fetchLlmConfig,
   fetchMemoryContent,
-  fetchModels,
+  fetchModelProfiles,
+  fetchProviderPresets,
   fetchSkills,
   fetchTools,
-  testLlmConnection,
+  testModelProfile,
   updateAgentSettings,
-  updateLlmConfig,
+  updateModelGlobals,
+  updateModelProfile,
   updateMemoryContent,
   type AssetsStatus,
-  type LlmConfig,
   type LlmTestResult,
+  type ModelProfilesList,
+  type ProviderPreset,
   type SkillInfo,
   type ToolInfo,
 } from '../api/agent'
 import type { SettingsState } from '../hooks/useSettings'
+import { useT } from '../i18n'
 import { AuditPanel } from './AuditPanel'
+import { ChevronIcon } from './ChevronIcon'
 
 interface SettingsPanelProps {
   isOpen: boolean
@@ -31,22 +38,22 @@ interface SettingsPanelProps {
   onOpenSession?: (sessionId: string) => void
 }
 
-const SECTIONS = [
-  { id: 'model', label: '模型服务', icon: 'model' },
-  { id: 'appearance', label: '外观', icon: 'appearance' },
-  { id: 'agent', label: 'Agent', icon: 'agent' },
-  { id: 'skills', label: '技能', icon: 'skills' },
-  { id: 'memory', label: '记忆', icon: 'memory' },
-  { id: 'cli', label: 'CLI', icon: 'cli' },
-  { id: 'assets', label: '资产', icon: 'assets' },
-  { id: 'audit', label: '审计', icon: 'audit' },
-  { id: 'shortcuts', label: '快捷键', icon: 'shortcuts' },
-  { id: 'data', label: '数据', icon: 'data' },
-  { id: 'about', label: '关于', icon: 'about' },
+const SECTION_DEFS = [
+  { id: 'model', labelKey: 'settings.nav.model', icon: 'model' },
+  { id: 'preferences', labelKey: 'settings.nav.preferences', icon: 'appearance' },
+  { id: 'agent', labelKey: 'settings.nav.agent', icon: 'agent' },
+  { id: 'skills', labelKey: 'settings.nav.skills', icon: 'skills' },
+  { id: 'memory', labelKey: 'settings.nav.memory', icon: 'memory' },
+  { id: 'cli', labelKey: 'settings.nav.cli', icon: 'cli' },
+  { id: 'assets', labelKey: 'settings.nav.assets', icon: 'assets' },
+  { id: 'audit', labelKey: 'settings.nav.audit', icon: 'audit' },
+  { id: 'shortcuts', labelKey: 'settings.nav.shortcuts', icon: 'shortcuts' },
+  { id: 'data', labelKey: 'settings.nav.data', icon: 'data' },
+  { id: 'about', labelKey: 'settings.nav.about', icon: 'about' },
 ] as const
 
-type SectionId = (typeof SECTIONS)[number]['id']
-type SectionIcon = (typeof SECTIONS)[number]['icon']
+type SectionId = (typeof SECTION_DEFS)[number]['id']
+type SectionIcon = (typeof SECTION_DEFS)[number]['icon']
 
 export function SettingsPanel({
   isOpen,
@@ -58,6 +65,11 @@ export function SettingsPanel({
   sessions = [],
   onOpenSession,
 }: SettingsPanelProps) {
+  const t = useT()
+  const sections = useMemo(
+    () => SECTION_DEFS.map((s) => ({ ...s, label: t(s.labelKey) })),
+    [t],
+  )
   const [activeSection, setActiveSection] = useState<SectionId>('model')
   const [assets, setAssets] = useState<AssetsStatus | null>(null)
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -66,23 +78,16 @@ export function SettingsPanel({
   const [skillsError, setSkillsError] = useState<string | null>(null)
   const [skillExpanded, setSkillExpanded] = useState<Record<string, boolean>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null)
-  const [llmKeyDraft, setLlmKeyDraft] = useState('')
-  const [llmUrlDraft, setLlmUrlDraft] = useState('')
-  const [llmModelDraft, setLlmModelDraft] = useState('')
-  const [llmSaving, setLlmSaving] = useState(false)
-  const [llmError, setLlmError] = useState<string | null>(null)
-  const [llmSavedHint, setLlmSavedHint] = useState<string | null>(null)
-  const [llmTempDraft, setLlmTempDraft] = useState(0.7)
-  const [llmTokensDraft, setLlmTokensDraft] = useState(2048)
-  const [llmTesting, setLlmTesting] = useState(false)
-  const [llmTestResult, setLlmTestResult] = useState<LlmTestResult | null>(null)
+  const [profilesList, setProfilesList] = useState<ModelProfilesList | null>(null)
   const [tools, setTools] = useState<ToolInfo[]>([])
   const [disabledTools, setDisabledTools] = useState<string[]>([])
   const [memoryDraft, setMemoryDraft] = useState('')
   const [memoryPath, setMemoryPath] = useState('')
+  const [projectMemoryDraft, setProjectMemoryDraft] = useState('')
+  const [projectMemoryPath, setProjectMemoryPath] = useState('')
   const [memorySaving, setMemorySaving] = useState(false)
   const [memoryHint, setMemoryHint] = useState<string | null>(null)
+  const [projectMemoryHint, setProjectMemoryHint] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isOpen) return
@@ -99,27 +104,30 @@ export function SettingsPanel({
     setLoadError(null)
     setSkillsLoading(true)
     setSkillsError(null)
-    Promise.all([fetchAssets(), fetchSkills(), fetchLlmConfig(), fetchTools(), fetchMemoryContent()])
-      .then(([a, s, llm, t, mem]) => {
+    Promise.all([
+      fetchAssets(),
+      fetchSkills(),
+      fetchModelProfiles(),
+      fetchTools(),
+      fetchMemoryContent('user'),
+      fetchMemoryContent('memory'),
+    ])
+      .then(([a, s, profiles, t, mem, proj]) => {
         if (cancelled) return
         setAssets(a)
         setSkills(s.skills)
         setAgentsMdExists(s.agents_md_exists)
-        setLlmConfig(llm)
-        setLlmUrlDraft(llm.base_url)
-        setLlmModelDraft(llm.default_model)
-        setLlmTempDraft(llm.temperature)
-        setLlmTokensDraft(llm.max_tokens)
-        setLlmKeyDraft('')
-        setLlmError(null)
+        setProfilesList(profiles)
         setTools(t.tools)
         setDisabledTools(t.disabled_tools)
         setMemoryDraft(mem.content)
         setMemoryPath(mem.path)
+        setProjectMemoryDraft(proj.content)
+        setProjectMemoryPath(proj.path)
       })
       .catch((err) => {
         if (cancelled) return
-        setLoadError(err instanceof Error ? err.message : '加载资产/技能失败')
+        setLoadError(err instanceof Error ? err.message : t('settings.loadAssetsFailed'))
       })
       .finally(() => {
         if (!cancelled) setSkillsLoading(false)
@@ -127,25 +135,25 @@ export function SettingsPanel({
     return () => {
       cancelled = true
     }
-  }, [isOpen])
+  }, [isOpen, t])
 
   if (!isOpen) return null
 
-  const activeMeta = SECTIONS.find((s) => s.id === activeSection) ?? SECTIONS[0]
+  const activeMeta = sections.find((s) => s.id === activeSection) ?? sections[0]
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div className="relative flex h-[82vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-xl">
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--border-subtle)] bg-[var(--surface)]/30 p-2">
-          <div className="px-2.5 pb-2 pt-1.5 text-[15px] font-semibold text-[var(--text-h)]">设置</div>
-          {SECTIONS.map((s) => (
+          <div className="px-2.5 pb-2 pt-1.5 text-[14px] font-semibold text-[var(--text-h)]">{t('settings.title')}</div>
+          {sections.map((s) => (
             <button
               key={s.id}
               type="button"
               onClick={() => setActiveSection(s.id)}
               className={[
-                'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors',
+                'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[14px] transition-colors',
                 s.id === activeSection
                   ? 'bg-[var(--surface-hover)] font-medium text-[var(--text-h)]'
                   : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)]/70 hover:text-[var(--text-h)]',
@@ -161,7 +169,7 @@ export function SettingsPanel({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-3">
-            <h2 className="text-[15px] font-semibold text-[var(--text-h)]">{activeMeta.label}</h2>
+            <h2 className="text-[14px] font-semibold text-[var(--text-h)]">{activeMeta.label}</h2>
             <button
               type="button"
               onClick={onClose}
@@ -173,75 +181,40 @@ export function SettingsPanel({
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="flex-1 overflow-y-auto px-5 py-4 text-[14px] leading-relaxed">
             <div className="mx-auto w-full max-w-xl space-y-3">
             {activeSection === 'model' && (
-              <>
-                <LlmProviderFields
-              config={llmConfig}
-              keyDraft={llmKeyDraft}
-              urlDraft={llmUrlDraft}
-              modelDraft={llmModelDraft}
-              tempDraft={llmTempDraft}
-              tokensDraft={llmTokensDraft}
-              saving={llmSaving}
-              error={llmError}
-              savedHint={llmSavedHint}
-              testing={llmTesting}
-              testResult={llmTestResult}
-              onKeyDraft={setLlmKeyDraft}
-              onUrlDraft={setLlmUrlDraft}
-              onModelDraft={setLlmModelDraft}
-              onTempDraft={setLlmTempDraft}
-              onTokensDraft={setLlmTokensDraft}
-              onTest={async () => {
-                setLlmTesting(true)
-                setLlmTestResult(null)
-                try {
-                  setLlmTestResult(await testLlmConnection())
-                } catch (err) {
-                  setLlmTestResult({ ok: false, error: err instanceof Error ? err.message : '测试失败' })
-                } finally {
-                  setLlmTesting(false)
-                }
-              }}
-              onSave={async (patch) => {
-                setLlmSaving(true)
-                setLlmError(null)
-                setLlmSavedHint(null)
-                try {
-                  const next = await updateLlmConfig(patch)
-                  setLlmConfig(next)
-                  setLlmUrlDraft(next.base_url)
-                  setLlmModelDraft(next.default_model)
-                  setLlmTempDraft(next.temperature)
-                  setLlmTokensDraft(next.max_tokens)
-                  if (patch.api_key) setLlmKeyDraft('')
-                  setLlmSavedHint('已保存到 backend/.env，立即生效')
-                } catch (err) {
-                  setLlmError(err instanceof Error ? err.message : '保存失败')
-                } finally {
-                  setLlmSaving(false)
-                }
-              }}
-            />
-              </>
+              <ModelProfilesSection list={profilesList} onChange={setProfilesList} />
             )}
 
-            {activeSection === 'appearance' && (
+            {activeSection === 'preferences' && (
               <>
-                <SettingsCard title="主题">
+                <SettingsCard title={t('settings.theme')}>
                   <div className="grid grid-cols-3 gap-2">
-                    <Choice label="深色" active={settings.theme === 'dark'} onClick={() => onChange('theme', 'dark')} />
-                    <Choice label="浅色" active={settings.theme === 'light'} onClick={() => onChange('theme', 'light')} />
-                    <Choice label="跟随系统" active={settings.theme === 'system'} onClick={() => onChange('theme', 'system')} />
+                    <Choice label={t('settings.themeDark')} active={settings.theme === 'dark'} onClick={() => onChange('theme', 'dark')} />
+                    <Choice label={t('settings.themeLight')} active={settings.theme === 'light'} onClick={() => onChange('theme', 'light')} />
+                    <Choice label={t('settings.themeSystem')} active={settings.theme === 'system'} onClick={() => onChange('theme', 'system')} />
                   </div>
                 </SettingsCard>
-                <SettingsCard title="字号">
+                <SettingsCard title={t('settings.fontSize')}>
                   <div className="grid grid-cols-3 gap-2">
-                    <Choice label="小" active={settings.fontSize === 'small'} onClick={() => onChange('fontSize', 'small')} />
-                    <Choice label="中" active={settings.fontSize === 'medium'} onClick={() => onChange('fontSize', 'medium')} />
-                    <Choice label="大" active={settings.fontSize === 'large'} onClick={() => onChange('fontSize', 'large')} />
+                    <Choice label={t('settings.fontSmall')} active={settings.fontSize === 'small'} onClick={() => onChange('fontSize', 'small')} />
+                    <Choice label={t('settings.fontMedium')} active={settings.fontSize === 'medium'} onClick={() => onChange('fontSize', 'medium')} />
+                    <Choice label={t('settings.fontLarge')} active={settings.fontSize === 'large'} onClick={() => onChange('fontSize', 'large')} />
+                  </div>
+                </SettingsCard>
+                <SettingsCard title={t('settings.language')} hint={t('settings.languageHint')}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Choice
+                      label={t('settings.languageZh')}
+                      active={settings.language === 'zh'}
+                      onClick={() => onChange('language', 'zh')}
+                    />
+                    <Choice
+                      label={t('settings.languageEn')}
+                      active={settings.language === 'en'}
+                      onClick={() => onChange('language', 'en')}
+                    />
                   </div>
                 </SettingsCard>
               </>
@@ -250,21 +223,44 @@ export function SettingsPanel({
             {activeSection === 'agent' && (
               <>
             <Toggle
-              label="自动压缩历史上下文"
-              description="超限时折叠旧轮次；本轮 Goal 会写入摘要并重新注入，不会被冲掉"
+              label={t('settings.autoCompress')}
+              description={t('settings.autoCompressDesc')}
               checked={settings.autoCompress}
               onChange={(v) => onChange('autoCompress', v)}
             />
             <Toggle
-              label="写入记忆前确认"
-              description="Agent 更新 USER.md 前需要确认"
+              label={t('settings.confirmMemory')}
+              description={t('settings.confirmMemoryDesc')}
               checked={settings.confirmMemory}
               onChange={(v) => onChange('confirmMemory', v)}
             />
+            <div className="mt-3">
+              <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.preset')}</div>
+              <div className="mt-0.5 text-[14px] text-[var(--text-muted)]">
+                {t('settings.presetDesc')}
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <Choice
+                  label="YOLO"
+                  active={settings.loopPreset === 'yolo'}
+                  onClick={() => onChange('loopPreset', 'yolo')}
+                />
+                <Choice
+                  label="Trusted"
+                  active={settings.loopPreset === 'trusted'}
+                  onClick={() => onChange('loopPreset', 'trusted')}
+                />
+                <Choice
+                  label="Strict"
+                  active={settings.loopPreset === 'strict'}
+                  onClick={() => onChange('loopPreset', 'strict')}
+                />
+              </div>
+            </div>
             <div className="mt-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm text-[var(--text-h)]">上下文上限</div>
-                <div className="text-xs text-[var(--text-muted)]">{settings.contextLimit.toLocaleString()} tokens</div>
+                <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.contextLimit')}</div>
+                <div className="text-[14px] text-[var(--text-muted)]">{settings.contextLimit.toLocaleString()} tokens</div>
               </div>
               <input
                 type="range"
@@ -285,6 +281,8 @@ export function SettingsPanel({
               onMaxToolIters={(v) => onChange('maxToolIters', v)}
               checkpointEveryNTools={settings.checkpointEveryNTools ?? 4}
               onCheckpointEveryNTools={(v) => onChange('checkpointEveryNTools', v)}
+              explorationRepeatThreshold={settings.explorationRepeatThreshold ?? 6}
+              onExplorationRepeatThreshold={(v) => onChange('explorationRepeatThreshold', v)}
               onToggleTool={(name) => {
                 const next = disabledTools.includes(name)
                   ? disabledTools.filter((t) => t !== name)
@@ -298,14 +296,13 @@ export function SettingsPanel({
 
             {activeSection === 'skills' && (
               <>
-            {skillsLoading && <p className="text-xs text-[var(--text-muted)]">加载中…</p>}
+            {skillsLoading && <p className="text-[14px] text-[var(--text-muted)]">{t('settings.loading')}</p>}
             {skillsError && (
-              <p className="text-xs text-amber-400">{skillsError}</p>
+              <p className="text-[14px] text-amber-400">{skillsError}</p>
             )}
             {skills.length === 0 && !skillsLoading && !skillsError ? (
-              <p className="text-xs text-[var(--text-muted)]">
-                工作区 skills/ 下未发现技能；可创建 skills/&lt;skill-id&gt;/SKILL.md（推荐，支持 YAML
-                frontmatter）或 README.md。
+              <p className="text-[14px] text-[var(--text-muted)]">
+                {t('settings.skillsEmpty')}
               </p>
             ) : (
               <div className="space-y-2">
@@ -317,7 +314,7 @@ export function SettingsPanel({
                         <button
                           type="button"
                           onClick={() => setSkillExpanded((prev) => ({ ...prev, [skill.id]: !prev[skill.id] }))}
-                          className="flex flex-1 items-center gap-1 text-left text-xs text-[var(--text-h)]"
+                          className="flex flex-1 items-center gap-1 text-left text-[14px] text-[var(--text-h)]"
                         >
                           <span className="text-[var(--text-dim)]">{skillExpanded[skill.id] ? '▾' : '▸'}</span>
                           <span className="font-medium">{skill.name}</span>
@@ -327,17 +324,17 @@ export function SettingsPanel({
                           type="button"
                           onClick={() => onToggleSkill(skill.id)}
                           className={[
-                            'rounded-md px-2 py-1 text-xs',
+                            'rounded-md px-2 py-1 text-[14px]',
                             active
                               ? 'bg-[var(--text-h)] text-[var(--bg)]'
                               : 'border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-h)]',
                           ].join(' ')}
                         >
-                          {active ? '已激活' : '未激活'}
+                          {active ? t('settings.skillOn') : t('settings.skillOff')}
                         </button>
                       </div>
                       {skillExpanded[skill.id] && (
-                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-[10px] text-[var(--text-muted)]">
+                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-[14px] text-[var(--text-muted)]">
                           {skill.description ? `${skill.description}\n\n` : ''}
                           {skill.preview}
                         </pre>
@@ -347,41 +344,88 @@ export function SettingsPanel({
                 })}
               </div>
             )}
-            <p className="mt-2 text-xs text-[var(--text-muted)]">
-              项目规则：{agentsMdExists ? '已发现 AGENTS.md' : '未发现 AGENTS.md'}
+            <p className="mt-2 text-[14px] text-[var(--text-muted)]">
+              {agentsMdExists ? t('settings.agentsMdYes') : t('settings.agentsMdNo')}
             </p>
               </>
             )}
 
             {activeSection === 'memory' && (
-              <MemorySection
-                draft={memoryDraft}
-                path={memoryPath}
-                saving={memorySaving}
-                hint={memoryHint}
-                onDraft={setMemoryDraft}
-                onSave={async () => {
-                  setMemorySaving(true)
-                  setMemoryHint(null)
-                  try {
-                    await updateMemoryContent(memoryDraft)
-                    setMemoryHint('已保存，下一轮对话生效')
-                  } finally {
-                    setMemorySaving(false)
+              <div className="space-y-4">
+                <MemorySection
+                  title={t('settings.memoryUser')}
+                  draft={memoryDraft}
+                  path={memoryPath}
+                  saving={memorySaving}
+                  hint={memoryHint}
+                  usageLabel={
+                    assets
+                      ? `${assets.user_md_chars ?? 0}/${assets.user_md_limit ?? 1375} chars`
+                      : undefined
                   }
-                }}
-                onClear={async () => {
-                  if (!window.confirm('确定清空 USER.md 全部记忆？')) return
-                  setMemorySaving(true)
-                  try {
-                    await updateMemoryContent('')
-                    setMemoryDraft('')
-                    setMemoryHint('已清空')
-                  } finally {
-                    setMemorySaving(false)
+                  onDraft={setMemoryDraft}
+                  onSave={async () => {
+                    setMemorySaving(true)
+                    setMemoryHint(null)
+                    try {
+                      await updateMemoryContent(memoryDraft, 'user')
+                      setMemoryHint(t('settings.memorySaved'))
+                    } finally {
+                      setMemorySaving(false)
+                    }
+                  }}
+                  onClear={async () => {
+                    if (!window.confirm(t('settings.memoryClearUserConfirm'))) return
+                    setMemorySaving(true)
+                    try {
+                      await updateMemoryContent('', 'user')
+                      setMemoryDraft('')
+                      setMemoryHint(t('settings.memoryCleared'))
+                    } finally {
+                      setMemorySaving(false)
+                    }
+                  }}
+                />
+                <MemorySection
+                  title={t('settings.memoryProject')}
+                  draft={projectMemoryDraft}
+                  path={projectMemoryPath}
+                  saving={memorySaving}
+                  hint={projectMemoryHint}
+                  usageLabel={
+                    assets
+                      ? `${assets.memory_md_chars ?? 0}/${assets.memory_md_limit ?? 2200} chars`
+                      : undefined
                   }
-                }}
-              />
+                  onDraft={setProjectMemoryDraft}
+                  onSave={async () => {
+                    setMemorySaving(true)
+                    setProjectMemoryHint(null)
+                    try {
+                      const saved = await updateMemoryContent(projectMemoryDraft, 'memory')
+                      setProjectMemoryPath(saved.path)
+                      setProjectMemoryHint(t('settings.memorySaved'))
+                      const a = await fetchAssets()
+                      setAssets(a)
+                    } finally {
+                      setMemorySaving(false)
+                    }
+                  }}
+                  onClear={async () => {
+                    if (!window.confirm(t('settings.memoryClearProjectConfirm'))) return
+                    setMemorySaving(true)
+                    try {
+                      await updateMemoryContent('', 'memory')
+                      setProjectMemoryDraft('')
+                      setProjectMemoryHint(t('settings.memoryCleared'))
+                      const a = await fetchAssets()
+                      setAssets(a)
+                    } finally {
+                      setMemorySaving(false)
+                    }
+                  }}
+                />
+              </div>
             )}
 
             {activeSection === 'cli' && <CliSection />}
@@ -391,36 +435,43 @@ export function SettingsPanel({
             {activeSection === 'assets' && (
               <>
             {loadError && (
-              <p className="mb-2 text-xs text-red-400">{loadError}</p>
+              <p className="mb-2 text-[14px] text-red-400">{loadError}</p>
             )}
             {assets ? (
-              <div className="space-y-1.5 rounded-lg bg-[var(--surface)] px-3 py-3 text-xs text-[var(--text-muted)]">
-                <Row label="健康" value={`${assets.status} · ${assets.provider}${assets.provider_available ? '' : '（不可用）'}`} />
-                <Row label="会话数" value={String(assets.session_count)} />
+              <div className="space-y-1.5 rounded-lg bg-[var(--surface)] px-3 py-3 text-[14px] text-[var(--text-muted)]">
+                <Row
+                  label={t('settings.assetsHealth')}
+                  value={`${assets.status} · ${assets.provider}${assets.provider_available ? '' : t('settings.assetsUnavailable')}`}
+                />
+                <Row label={t('settings.assetsSessions')} value={String(assets.session_count)} />
                 <Row
                   label="USER.md"
                   value={
                     assets.user_md_exists
                       ? `${assets.user_md_size} B`
-                      : '尚未创建'
+                      : t('settings.assetsNotCreated')
                   }
                 />
                 <Row
-                  label="工作区"
+                  label={t('settings.assetsWorkspace')}
                   value={
                     assets.workspace_configured
-                      ? assets.workspace_root || '已配置'
-                      : '未绑定'
+                      ? assets.workspace_root || t('settings.assetsConfigured')
+                      : t('settings.assetsUnbound')
                   }
                 />
                 <Row
-                  label="压缩 / 记忆确认"
-                  value={`${assets.settings.auto_compress ? '开' : '关'} / ${assets.settings.confirm_memory ? '开' : '关'}`}
+                  label={t('settings.assetsCompressMemory')}
+                  value={`${assets.settings.auto_compress ? t('settings.assetsOn') : t('settings.assetsOff')} / ${assets.settings.confirm_memory ? t('settings.assetsOn') : t('settings.assetsOff')}`}
                 />
-                <Row label="上下文上限" value={String(assets.settings.context_limit)} />
+                <Row
+                  label="Preset"
+                  value={String(assets.settings.loop_preset || 'yolo')}
+                />
+                <Row label={t('settings.contextLimit')} value={String(assets.settings.context_limit)} />
               </div>
             ) : (
-              !loadError && <p className="text-xs text-[var(--text-muted)]">加载中…</p>
+              !loadError && <p className="text-[14px] text-[var(--text-muted)]">{t('settings.loading')}</p>
             )}
               </>
             )}
@@ -436,22 +487,22 @@ export function SettingsPanel({
             {activeSection === 'shortcuts' && (
               <>
             <Toggle
-              label="Enter 发送"
-              description="关闭后可用 Shift+Enter 换行"
+              label={t('settings.enterToSend')}
+              description={t('settings.enterToSendDesc')}
               checked={settings.enterToSend}
               onChange={(v) => onChange('enterToSend', v)}
             />
             <Toggle
-              label="启用导航快捷键"
-              description="↑/↓ 在消息间跳转，Esc 停止生成"
+              label={t('settings.navShortcuts')}
+              description={t('settings.navShortcutsDesc')}
               checked={settings.shortcuts}
               onChange={(v) => onChange('shortcuts', v)}
             />
-            <div className="mt-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-muted)]">
-              <div className="flex justify-between py-1"><span>新对话</span><span className="font-mono text-[var(--text-h)]">Ctrl+N</span></div>
-              <div className="flex justify-between py-1"><span>停止生成</span><span className="font-mono text-[var(--text-h)]">Esc</span></div>
-              <div className="flex justify-between py-1"><span>上一个 / 下一个</span><span className="font-mono text-[var(--text-h)]">↑ / ↓</span></div>
-              <div className="flex justify-between py-1"><span>打开设置</span><span className="font-mono text-[var(--text-h)]">Ctrl+,</span></div>
+            <div className="mt-3 rounded-lg bg-[var(--surface)] px-3 py-2 text-[14px] text-[var(--text-muted)]">
+              <div className="flex justify-between py-1"><span>{t('settings.shortcutNew')}</span><span className="font-mono text-[var(--text-h)]">Ctrl+N</span></div>
+              <div className="flex justify-between py-1"><span>{t('settings.shortcutStop')}</span><span className="font-mono text-[var(--text-h)]">Esc</span></div>
+              <div className="flex justify-between py-1"><span>{t('settings.shortcutNav')}</span><span className="font-mono text-[var(--text-h)]">↑ / ↓</span></div>
+              <div className="flex justify-between py-1"><span>{t('settings.shortcutSettings')}</span><span className="font-mono text-[var(--text-h)]">Ctrl+,</span></div>
             </div>
               </>
             )}
@@ -459,8 +510,8 @@ export function SettingsPanel({
             {activeSection === 'data' && (
               <>
             <div className="rounded-lg bg-[var(--surface)] px-3 py-3">
-              <div className="text-sm text-[var(--text-h)]">本地数据</div>
-              <div className="mt-1 text-xs text-[var(--text-muted)]">会话保存在浏览器本地存储和后端 ./data 中</div>
+              <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.dataLocal')}</div>
+              <div className="mt-1 text-[14px] text-[var(--text-muted)]">{t('settings.dataLocalDesc')}</div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -470,13 +521,13 @@ export function SettingsPanel({
                     const url = URL.createObjectURL(blob)
                     const a = document.createElement('a')
                     a.href = url
-                    a.download = `hal-agent-settings-${Date.now()}.json`
+                    a.download = `loop-agent-settings-${Date.now()}.json`
                     a.click()
                     URL.revokeObjectURL(url)
                   }}
-                  className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
+                  className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
                 >
-                  导出设置
+                  {t('settings.exportSettings')}
                 </button>
                 <button
                   type="button"
@@ -491,27 +542,27 @@ export function SettingsPanel({
                       const url = URL.createObjectURL(blob)
                       const a = document.createElement('a')
                       a.href = url
-                      a.download = `hal-agent-audit-${Date.now()}.json`
+                      a.download = `loop-agent-audit-${Date.now()}.json`
                       a.click()
                       URL.revokeObjectURL(url)
                     })
                   }}
-                  className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
+                  className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)]"
                 >
-                  导出最近审计
+                  {t('settings.exportAudit')}
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    if (window.confirm('确定清除本地设置缓存？会话数据不会删除。')) {
+                    if (window.confirm(t('settings.resetConfirm'))) {
                       localStorage.removeItem('agent-chat:settings')
                       localStorage.removeItem('agent-chat:theme')
                       window.location.reload()
                     }
                   }}
-                  className="rounded-md border border-red-900/40 bg-red-950/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40"
+                  className="rounded-md border border-red-900/40 bg-red-950/20 px-3 py-1.5 text-[14px] text-red-400 hover:bg-red-950/40"
                 >
-                  重置设置
+                  {t('settings.resetSettings')}
                 </button>
               </div>
             </div>
@@ -520,8 +571,8 @@ export function SettingsPanel({
             </div>
           </div>
 
-          <div className="border-t border-[var(--border-subtle)] px-5 py-2.5 text-center text-[11px] text-[var(--text-dim)]">
-            外观存浏览器；Agent 开关与模型服务覆盖同步到后端
+          <div className="border-t border-[var(--border-subtle)] px-5 py-2.5 text-center text-[14px] text-[var(--text-dim)]">
+            {t('settings.footer')}
           </div>
         </div>
       </div>
@@ -538,6 +589,8 @@ function AgentGovernanceFields({
   onMaxToolIters,
   checkpointEveryNTools,
   onCheckpointEveryNTools,
+  explorationRepeatThreshold,
+  onExplorationRepeatThreshold,
   onToggleTool,
 }: {
   tools: ToolInfo[]
@@ -548,14 +601,19 @@ function AgentGovernanceFields({
   onMaxToolIters: (value: number) => void
   checkpointEveryNTools: number
   onCheckpointEveryNTools: (value: number) => void
+  explorationRepeatThreshold: number
+  onExplorationRepeatThreshold: (value: number) => void
   onToggleTool: (name: string) => void
 }) {
+  const t = useT()
   return (
     <>
       <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
         <div>
-          <div className="text-sm text-[var(--text-h)]">审批超时</div>
-          <div className="text-xs text-[var(--text-muted)]">{approvalTimeout} 秒 · 超时后提案自动失效</div>
+          <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.approvalTimeout')}</div>
+          <div className="text-[14px] text-[var(--text-muted)]">
+            {t('settings.approvalTimeoutDesc', { sec: approvalTimeout })}
+          </div>
         </div>
         <input
           type="range"
@@ -570,9 +628,9 @@ function AgentGovernanceFields({
 
       <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
         <div>
-          <div className="text-sm text-[var(--text-h)]">工具轮次上限</div>
-          <div className="text-xs text-[var(--text-muted)]">
-            {maxToolIters} 轮 · 达上限后尝试总结而非直接中止
+          <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.maxToolIters')}</div>
+          <div className="text-[14px] text-[var(--text-muted)]">
+            {t('settings.maxToolItersDesc', { n: maxToolIters })}
           </div>
         </div>
         <input
@@ -588,11 +646,11 @@ function AgentGovernanceFields({
 
       <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
         <div>
-          <div className="text-sm text-[var(--text-h)]">进度检查点</div>
-          <div className="text-xs text-[var(--text-muted)]">
+          <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.checkpoint')}</div>
+          <div className="text-[14px] text-[var(--text-muted)]">
             {checkpointEveryNTools === 0
-              ? '仅审批 gate 返回后对照目标'
-              : `每 ${checkpointEveryNTools} 次工具 · 强制对照目标`}
+              ? t('settings.checkpointGateOnly')
+              : t('settings.checkpointEvery', { n: checkpointEveryNTools })}
           </div>
         </div>
         <input
@@ -606,21 +664,41 @@ function AgentGovernanceFields({
         />
       </div>
 
-      <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
-        <div className="text-sm text-[var(--text-h)]">本轮目标（Turn Goal）</div>
-        <div className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
-          每轮从用户消息自动提取目标并注入 loop；短回复如「好的 / 继续」会继承上一轮实质目标。消息旁显示「目标」条。目标变更会写入审计，并在目标条标「已变更」。
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4">
+        <div>
+          <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.exploration')}</div>
+          <div className="text-[14px] text-[var(--text-muted)]">
+            {explorationRepeatThreshold === 0
+              ? t('settings.explorationOff')
+              : t('settings.explorationOn', { n: explorationRepeatThreshold })}
+          </div>
         </div>
-        <div className="mt-2 text-xs leading-relaxed text-[var(--text-dim)]">
-          检查点（F2）：每 N 次工具或审批返回后，loop 要求模型说明相对目标的进度 / 阻塞 / 下一步；说明会出现在消息旁「检查点」条（可折叠）。
-        </div>
+        <input
+          type="range"
+          min={0}
+          max={12}
+          step={1}
+          value={explorationRepeatThreshold}
+          onChange={(e) => {
+            const raw = Number(e.target.value)
+            // Backend: 0=off; else clamp 3–12 (skip 1–2 dead zone in UI).
+            onExplorationRepeatThreshold(raw === 0 ? 0 : Math.max(3, raw))
+          }}
+          className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
+        />
       </div>
 
       <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
-        <div className="text-sm text-[var(--text-h)]">工具开关</div>
-        <div className="mb-2 text-xs text-[var(--text-muted)]">关闭后模型本轮不再看到该工具</div>
+        <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.turnGoalTitle')}</div>
+        <div className="mt-1 text-[14px] leading-relaxed text-[var(--text-muted)]">{t('settings.turnGoalBody')}</div>
+        <div className="mt-2 text-[14px] leading-relaxed text-[var(--text-dim)]">{t('settings.turnGoalCheckpoint')}</div>
+      </div>
+
+      <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
+        <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.toolsTitle')}</div>
+        <div className="mb-2 text-[14px] text-[var(--text-muted)]">{t('settings.toolsHint')}</div>
         {tools.length === 0 ? (
-          <p className="text-xs text-[var(--text-muted)]">加载中…</p>
+          <p className="text-[14px] text-[var(--text-muted)]">{t('settings.loading')}</p>
         ) : (
           <div className="grid grid-cols-2 gap-1.5">
             {tools.map((tool) => {
@@ -632,7 +710,7 @@ function AgentGovernanceFields({
                   title={tool.description}
                   onClick={() => onToggleTool(tool.name)}
                   className={[
-                    'rounded-lg px-2.5 py-1.5 text-left font-mono text-xs transition-colors',
+                    'rounded-lg px-2.5 py-1.5 text-left font-mono text-[14px] transition-colors',
                     enabled
                       ? 'bg-[var(--accent-bg)] text-[var(--text-h)]'
                       : 'bg-[var(--surface)] text-[var(--text-dim)] line-through',
@@ -650,120 +728,124 @@ function AgentGovernanceFields({
 }
 
 function MemorySection({
+  title,
   draft,
   path,
   saving,
   hint,
+  usageLabel,
   onDraft,
   onSave,
   onClear,
 }: {
+  title: string
   draft: string
   path: string
   saving: boolean
   hint: string | null
+  usageLabel?: string
   onDraft: (value: string) => void
   onSave: () => Promise<void>
   onClear: () => Promise<void>
 }) {
+  const t = useT()
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-sm text-[var(--text-h)]">USER.md 长期记忆</div>
-          <span className="max-w-[55%] truncate font-mono text-[10px] text-[var(--text-dim)]" title={path}>
-            {path}
-          </span>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-[14px] font-medium text-[var(--text-h)]">{title}</div>
+          <div className="flex min-w-0 flex-col items-end gap-0.5">
+            {usageLabel && (
+              <span className="font-mono text-[14px] text-[var(--text-muted)]">{usageLabel}</span>
+            )}
+            <span className="max-w-[55%] truncate font-mono text-[14px] text-[var(--text-dim)]" title={path}>
+              {path}
+            </span>
+          </div>
         </div>
         <textarea
           value={draft}
           onChange={(e) => onDraft(e.target.value)}
-          placeholder="还没有记忆。Agent 提议写入或在这里直接编辑。"
-          rows={12}
-          className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-[13px] leading-relaxed text-[var(--text-h)] outline-none placeholder:text-[var(--text-dim)] focus:border-[var(--accent)]"
+          placeholder={t('settings.memoryPlaceholder')}
+          rows={10}
+          className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-[14px] leading-relaxed text-[var(--text-h)] outline-none placeholder:text-[var(--text-dim)] focus:border-[var(--accent)]"
         />
         <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
             disabled={saving}
             onClick={() => void onSave()}
-            className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+            className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
           >
-            {saving ? '保存中…' : '保存'}
+            {saving ? t('settings.saving') : t('settings.save')}
           </button>
           <button
             type="button"
             disabled={saving || !draft.trim()}
             onClick={() => void onClear()}
-            className="rounded-md border border-red-900/40 bg-red-950/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40 disabled:opacity-40"
+            className="rounded-md border border-red-900/40 bg-red-950/20 px-3 py-1.5 text-[14px] text-red-400 hover:bg-red-950/40 disabled:opacity-40"
           >
-            清空记忆
+            {t('settings.memoryClear')}
           </button>
-          {hint && <span className="text-xs text-emerald-400">{hint}</span>}
+          {hint && <span className="text-[14px] text-emerald-400">{hint}</span>}
         </div>
-        <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-          这里的编辑直接生效（相当于你自己动手，无需审批）。Agent 通过 propose_memory 的写入仍走确认。
-        </p>
+        <p className="mt-2 text-[14px] text-[var(--text-muted)]">{t('settings.memoryEditHint')}</p>
       </div>
     </div>
   )
 }
 
 function CliSection() {
+  const t = useT()
   const commands = [
-    { cmd: 'hal ask "问题"', desc: '发起对话（自动建会话）' },
-    { cmd: 'hal status', desc: '查看待审批项' },
-    { cmd: 'hal approve --patch-id <id>', desc: '批准改动' },
-    { cmd: 'hal reject --shell-id <id>', desc: '拒绝命令' },
-    { cmd: 'hal run --wait -s <会话> "任务"', desc: '跑任务并等审批完成' },
-    { cmd: 'hal sessions', desc: '列出会话' },
+    { cmd: 'loop ask "question"', descKey: 'settings.cliAsk' as const },
+    { cmd: 'loop status', descKey: 'settings.cliStatus' as const },
+    { cmd: 'loop approve --patch-id <id>', descKey: 'settings.cliApprove' as const },
+    { cmd: 'loop reject --shell-id <id>', descKey: 'settings.cliReject' as const },
+    { cmd: 'loop run --wait -s <session> "task"', descKey: 'settings.cliRun' as const },
+    { cmd: 'loop sessions', descKey: 'settings.cliSessions' as const },
   ]
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 text-sm text-[var(--text-h)]">配置文件</div>
-        <p className="font-mono text-xs text-[var(--text-muted)]">~/.config/hal-agent/config.json</p>
-        <p className="mt-1 text-[11px] text-[var(--text-dim)]">
-          优先级：环境变量 AGENT_BASE_URL &gt; 配置文件 &gt; 默认 http://127.0.0.1:8000
-        </p>
+        <div className="mb-2 text-[14px] font-medium text-[var(--text-h)]">{t('settings.cliConfig')}</div>
+        <p className="font-mono text-[14px] text-[var(--text-muted)]">~/.config/loop-agent/config.json</p>
+        <p className="mt-1 text-[14px] text-[var(--text-dim)]">{t('settings.cliConfigHint')}</p>
       </div>
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
-        <div className="mb-2 text-sm text-[var(--text-h)]">常用命令</div>
+        <div className="mb-2 text-[14px] font-medium text-[var(--text-h)]">{t('settings.cliCommands')}</div>
         <div className="space-y-1.5">
           {commands.map((c) => (
             <div key={c.cmd} className="flex items-baseline justify-between gap-3">
-              <code className="rounded bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-h)]">
+              <code className="rounded bg-[var(--bg)] px-1.5 py-0.5 font-mono text-[14px] text-[var(--text-h)]">
                 {c.cmd}
               </code>
-              <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{c.desc}</span>
+              <span className="shrink-0 text-[14px] text-[var(--text-muted)]">{t(c.descKey)}</span>
             </div>
           ))}
         </div>
-        <p className="mt-2 text-[11px] text-[var(--text-dim)]">
-          使用前激活虚拟环境：source backend/.venv/bin/activate
-        </p>
+        <p className="mt-2 text-[14px] text-[var(--text-dim)]">{t('settings.cliVenv')}</p>
       </div>
     </div>
   )
 }
 
 function AboutSection() {
+  const t = useT()
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-        <img src="/favicon.svg" alt="Hal Agent" className="h-12 w-12" />
+        <img src="/favicon.svg" alt="Loop Agent" className="h-12 w-12" />
         <div>
-          <div className="text-[15px] font-semibold text-[var(--text-h)]">Hal Agent</div>
-          <div className="mt-0.5 text-xs text-[var(--text-muted)]">
-            可监督的 AI 编码工作台 · React + FastAPI + SQLite
-          </div>
+          <div className="text-[14px] font-semibold text-[var(--text-h)]">Loop Agent</div>
+          <div className="mt-0.5 text-[14px] text-[var(--text-muted)]">{t('settings.aboutTagline')}</div>
         </div>
       </div>
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-xs text-[var(--text-muted)]">
-        <div className="flex justify-between py-1"><span>后端</span><span className="font-mono text-[var(--text-h)]">hal-agent-backend 0.1.0</span></div>
-        <div className="flex justify-between py-1"><span>路线图</span><span className="font-mono text-[var(--text-h)]">docs/agent-window-roadmap.md</span></div>
-        <div className="flex justify-between py-1"><span>变更记录</span><span className="font-mono text-[var(--text-h)]">CHANGELOG.md</span></div>
-        <div className="flex justify-between py-1"><span>CLI 设计</span><span className="font-mono text-[var(--text-h)]">docs/v1-7-headless-cli-design.md</span></div>
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-[14px] text-[var(--text-muted)]">
+        <div className="flex justify-between py-1"><span>{t('settings.aboutBackend')}</span><span className="font-mono text-[var(--text-h)]">loop-agent-backend 0.1.0</span></div>
+        <div className="flex justify-between py-1"><span>{t('settings.aboutRoadmap')}</span><span className="font-mono text-[var(--text-h)]">docs/agent-window-roadmap.md</span></div>
+        <div className="flex justify-between py-1"><span>{t('settings.aboutChangelog')}</span><span className="font-mono text-[var(--text-h)]">CHANGELOG.md</span></div>
+        <div className="flex justify-between py-1"><span>{t('settings.aboutCli')}</span><span className="font-mono text-[var(--text-h)]">docs/design/v1-7-headless-cli-design.md</span></div>
       </div>
     </div>
   )
@@ -786,9 +868,9 @@ function Choice({ label, active, onClick }: { label: string; active: boolean; on
       type="button"
       onClick={onClick}
       className={[
-        'rounded-lg px-2 py-2 text-sm transition-colors',
+        'rounded-lg px-2 py-2 text-[14px] transition-colors',
         active
-          ? 'bg-[var(--accent-bg)] text-[var(--text-h)]'
+          ? 'bg-[var(--accent-bg)] font-medium text-[var(--text-h)]'
           : 'bg-[var(--surface)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]',
       ].join(' ')}
     >
@@ -797,179 +879,365 @@ function Choice({ label, active, onClick }: { label: string; active: boolean; on
   )
 }
 
-function LlmProviderFields({
-  config,
-  keyDraft,
-  urlDraft,
-  modelDraft,
-  tempDraft,
-  tokensDraft,
-  saving,
-  error,
-  savedHint,
-  testing,
-  testResult,
-  onKeyDraft,
-  onUrlDraft,
-  onModelDraft,
-  onTempDraft,
-  onTokensDraft,
-  onTest,
-  onSave,
+function ModelProfilesSection({
+  list,
+  onChange,
 }: {
-  config: LlmConfig | null
-  keyDraft: string
-  urlDraft: string
-  modelDraft: string
-  tempDraft: number
-  tokensDraft: number
-  saving: boolean
-  error: string | null
-  savedHint: string | null
-  testing: boolean
-  testResult: LlmTestResult | null
-  onKeyDraft: (value: string) => void
-  onUrlDraft: (value: string) => void
-  onModelDraft: (value: string) => void
-  onTempDraft: (value: number) => void
-  onTokensDraft: (value: number) => void
-  onTest: () => Promise<void>
-  onSave: (patch: {
-    api_key?: string
-    base_url?: string
-    default_model?: string
-    temperature?: number
-    max_tokens?: number
-  }) => Promise<void>
+  list: ModelProfilesList | null
+  onChange: (next: ModelProfilesList) => void
 }) {
-  const [models, setModels] = useState<string[]>([])
-  const [modelsLoading, setModelsLoading] = useState(false)
+  const t = useT()
+  const [presets, setPresets] = useState<ProviderPreset[]>([])
+  const [presetId, setPresetId] = useState('router')
+  const [presetsReady, setPresetsReady] = useState(false)
+  const [addingPreset, setAddingPreset] = useState(false)
+  const addingPresetRef = useRef(false)
+  const [drafts, setDrafts] = useState<
+    Record<string, { label: string; base_url: string; model_id: string; api_key: string }>
+  >({})
+  const [tempDraft, setTempDraft] = useState(0.7)
+  const [tokensDraft, setTokensDraft] = useState(2048)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [hint, setHint] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, LlmTestResult>>({})
+  const [globalsSaving, setGlobalsSaving] = useState(false)
 
   useEffect(() => {
-    if (!config) return
     let cancelled = false
-    setModelsLoading(true)
-    fetchModels()
-      .then((res) => {
+    fetchProviderPresets()
+      .then((rows) => {
         if (cancelled) return
-        setModels(res.models.map((m) => m.id).filter(Boolean))
+        setPresets(rows)
+        if (rows.length > 0 && !rows.some((row) => row.id === 'router')) {
+          setPresetId(rows[0].id)
+        }
       })
       .catch(() => {
-        if (!cancelled) setModels([])
+        if (!cancelled) {
+          setPresets([])
+          setError(t('settings.presetsLoadFailed'))
+        }
       })
       .finally(() => {
-        if (!cancelled) setModelsLoading(false)
+        if (!cancelled) setPresetsReady(true)
       })
     return () => {
       cancelled = true
     }
-    // Re-fetch the gateway model list whenever the base URL changes.
-  }, [config?.base_url, config?.api_key_configured])
+  }, [t])
 
-  if (!config) {
-    return <p className="text-xs text-[var(--text-muted)]">加载中…</p>
+  useEffect(() => {
+    if (!list) return
+    const next: typeof drafts = {}
+    for (const p of list.profiles) {
+      next[p.id] = {
+        label: p.label,
+        base_url: p.base_url,
+        model_id: p.model_id,
+        api_key: '',
+      }
+    }
+    setDrafts(next)
+    setTempDraft(list.temperature)
+    setTokensDraft(list.max_tokens)
+  }, [list])
+
+  if (!list) {
+    return <p className="text-[14px] text-[var(--text-muted)]">{t('settings.loading')}</p>
   }
 
-  const dirty =
-    urlDraft.trim() !== config.base_url ||
-    modelDraft.trim() !== config.default_model ||
-    keyDraft.trim().length > 0 ||
-    tempDraft !== config.temperature ||
-    tokensDraft !== config.max_tokens
+  const patchDraft = (id: string, patch: Partial<(typeof drafts)[string]>) => {
+    setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }
 
-  const modelChoices = models.includes(modelDraft)
-    ? models
-    : modelDraft
-      ? [modelDraft, ...models]
-      : models
+  const applyList = (next: ModelProfilesList) => {
+    onChange(next)
+    setHint(null)
+  }
 
   return (
-    <div className="space-y-3">
-      <SettingsCard title="连接" hint={config.api_key_configured ? '密钥已保存（不回显）' : '尚未配置密钥'}>
-        <label className="block">
-          <span className="mb-1 block text-[12px] text-[var(--text-muted)]">API Key</span>
-          <input
-            type="password"
-            autoComplete="off"
-            value={keyDraft}
-            onChange={(e) => onKeyDraft(e.target.value)}
-            placeholder={config.api_key_configured ? '已保存。输入新密钥以替换' : '粘贴 API Key'}
-            className={fieldClass}
-          />
-        </label>
-        <label className="mt-3 block">
-          <span className="mb-1 block text-[12px] text-[var(--text-muted)]">Base URL</span>
-          <input
-            type="url"
-            autoComplete="off"
-            value={urlDraft}
-            onChange={(e) => onUrlDraft(e.target.value)}
-            placeholder="https://api.example.com/v1"
-            className={fieldClass}
-          />
-          <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-dim)]">
-            OpenAI 兼容网关（含 /v1）。保存写入 backend/.env 并立即生效。
-          </p>
-        </label>
-        <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-3">
-          <div className="min-w-0">
-            <div className="text-[13px] text-[var(--text-h)]">连接测试</div>
-            {testResult && (
-              <p className={`mt-0.5 text-[11px] ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
-                {testResult.ok
-                  ? `正常 · ${testResult.latency_ms}ms · ${testResult.model_count} 个模型`
-                  : `失败：${testResult.error || '未知错误'}`}
+    <div className="space-y-4">
+      {list.profiles.map((profile) => {
+        const draft = drafts[profile.id] ?? {
+          label: profile.label,
+          base_url: profile.base_url,
+          model_id: profile.model_id,
+          api_key: '',
+        }
+        const isActive = profile.id === list.active_id
+        const testResult = testResults[profile.id]
+        const dirty =
+          draft.label.trim() !== profile.label ||
+          draft.base_url.trim() !== profile.base_url ||
+          draft.model_id.trim() !== profile.model_id ||
+          draft.api_key.trim().length > 0
+
+        return (
+          <div key={profile.id} className="space-y-2">
+            <div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={draft.label}
+                  onChange={(e) => patchDraft(profile.id, { label: e.target.value })}
+                  className="min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] font-medium leading-5 text-[var(--text-h)] outline-none focus:ring-0"
+                  aria-label={t('settings.profileNameAria')}
+                />
+                <div className="flex h-5 shrink-0 items-center gap-3">
+                  {isActive && (
+                    <span className="inline-flex h-5 items-center rounded-md bg-[var(--accent-bg)] px-1.5 text-[14px] font-medium leading-none text-[var(--text-h)]">
+                      {t('settings.profileActiveBadge')}
+                    </span>
+                  )}
+                  <SwitchControl
+                    checked={profile.enabled}
+                    ariaLabel={t('settings.profileEnabledAria', { label: profile.label })}
+                    disabled={busyId === profile.id}
+                    onClick={() => {
+                      void (async () => {
+                        setBusyId(profile.id)
+                        setError(null)
+                        try {
+                          applyList(await updateModelProfile(profile.id, { enabled: !profile.enabled }))
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : t('settings.updateFailed'))
+                        } finally {
+                          setBusyId(null)
+                        }
+                      })()
+                    }}
+                  />
+                </div>
+              </div>
+              <p className="mt-0.5 text-[14px] leading-relaxed text-[var(--text-muted)]">
+                {t('settings.profileEndpointHint')}
               </p>
-            )}
+            </div>
+
+            <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+              <ProfileRow
+                label="Base URL"
+                value={draft.base_url}
+                placeholder="https://api.example.com/v1"
+                onChange={(v) => patchDraft(profile.id, { base_url: v })}
+              />
+              <ProfileRow
+                label="API Key"
+                value={draft.api_key}
+                type="password"
+                placeholder={
+                  profile.api_key_configured
+                    ? t('settings.profileKeySavedPlaceholder')
+                    : t('settings.profileKeyPastePlaceholder')
+                }
+                onChange={(v) => patchDraft(profile.id, { api_key: v })}
+              />
+              <ProfileRow
+                label="Model ID"
+                value={draft.model_id}
+                placeholder="kimi-for-coding"
+                onChange={(v) => patchDraft(profile.id, { model_id: v })}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!isActive && (
+                <button
+                  type="button"
+                  disabled={busyId === profile.id}
+                  onClick={() => {
+                    void (async () => {
+                      setBusyId(profile.id)
+                      setError(null)
+                      try {
+                        applyList(await activateModelProfile(profile.id))
+                        setHint(t('settings.profileActive'))
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : t('settings.activateFailed'))
+                      } finally {
+                        setBusyId(null)
+                      }
+                    })()
+                  }}
+                  className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+                >
+                  {t('settings.profileSetActive')}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busyId === profile.id}
+                onClick={() => {
+                  void (async () => {
+                    setBusyId(profile.id)
+                    setError(null)
+                    try {
+                      const result = await testModelProfile(profile.id)
+                      setTestResults((prev) => ({ ...prev, [profile.id]: result }))
+                    } catch (err) {
+                      setTestResults((prev) => ({
+                        ...prev,
+                        [profile.id]: {
+                          ok: false,
+                          error: err instanceof Error ? err.message : t('settings.testFailed'),
+                        },
+                      }))
+                    } finally {
+                      setBusyId(null)
+                    }
+                  })()
+                }}
+                className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+              >
+                {t('settings.profileTest')}
+              </button>
+              <button
+                type="button"
+                disabled={busyId === profile.id || !dirty}
+                onClick={() => {
+                  void (async () => {
+                    setBusyId(profile.id)
+                    setError(null)
+                    setHint(null)
+                    try {
+                      const patch: {
+                        label?: string
+                        base_url?: string
+                        model_id?: string
+                        api_key?: string
+                      } = {
+                        label: draft.label.trim(),
+                        base_url: draft.base_url.trim(),
+                        model_id: draft.model_id.trim(),
+                      }
+                      if (draft.api_key.trim()) patch.api_key = draft.api_key.trim()
+                      applyList(await updateModelProfile(profile.id, patch))
+                      setHint(t('settings.profileSaved'))
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t('settings.saveFailed'))
+                    } finally {
+                      setBusyId(null)
+                    }
+                  })()
+                }}
+                className="rounded-md bg-[var(--accent-bg)] px-2.5 py-1 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+              >
+                {t('settings.save')}
+              </button>
+              <button
+                type="button"
+                disabled={busyId === profile.id || list.profiles.length <= 1}
+                onClick={() => {
+                  void (async () => {
+                    setBusyId(profile.id)
+                    setError(null)
+                    try {
+                      applyList(await deleteModelProfile(profile.id))
+                      setHint(t('settings.profileDeleted'))
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t('settings.deleteFailed'))
+                    } finally {
+                      setBusyId(null)
+                    }
+                  })()
+                }}
+                className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[14px] text-red-400 hover:bg-[var(--surface-hover)] disabled:opacity-40"
+              >
+                {t('settings.profileDelete')}
+              </button>
+              {testResult && (
+                <span className={`text-[14px] ${testResult.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {testResult.ok
+                    ? t('settings.profileTestOk', {
+                        ms: testResult.latency_ms ?? 0,
+                        count: testResult.model_count ?? 0,
+                      })
+                    : t('settings.profileTestFail', {
+                        error: testResult.error || t('settings.profileTestUnknown'),
+                      })}
+                </span>
+              )}
+            </div>
           </div>
-          <button
-            type="button"
-            disabled={testing}
-            onClick={() => void onTest()}
-            className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+        )
+      })}
+
+      <div className="flex items-center gap-2">
+        <div
+          className={`relative min-w-0 flex-1 ${!presetsReady || addingPreset || presets.length === 0 ? 'opacity-50' : ''}`}
+        >
+          <select
+            value={presets.some((row) => row.id === presetId) ? presetId : ''}
+            onChange={(e) => setPresetId(e.target.value)}
+            disabled={!presetsReady || addingPreset || presets.length === 0}
+            className="w-full appearance-none rounded-lg border border-[var(--border)] bg-[var(--bg)] py-2 pl-2.5 pr-9 text-[14px] text-[var(--text-h)] outline-none focus:border-[var(--accent)]"
+            aria-label={t('settings.addPreset')}
           >
-            {testing ? '测试中…' : '测试连接'}
-          </button>
-        </div>
-      </SettingsCard>
-
-      <SettingsCard title="默认模型" hint={modelsLoading ? '拉取列表…' : undefined}>
-        <div className="flex flex-wrap gap-1.5">
-          {modelChoices.map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => onModelDraft(m)}
-              className={[
-                'rounded-full px-2.5 py-1 text-[12px] transition-colors',
-                m === modelDraft
-                  ? 'bg-[var(--accent-bg)] text-[var(--text-h)] ring-1 ring-[var(--accent)]'
-                  : 'bg-[var(--bg)] text-[var(--text-muted)] hover:text-[var(--text-h)]',
-              ].join(' ')}
-            >
-              {m}
-            </button>
-          ))}
-          {modelChoices.length === 0 && !modelsLoading && (
-            <span className="text-[12px] text-[var(--text-muted)]">网关未返回列表，可手填下方。</span>
+          {presets.length === 0 ? (
+            <option value="">{presetsReady ? t('settings.presetsLoadFailed') : t('model.loading')}</option>
+          ) : (
+            presets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))
           )}
+          </select>
+          <ChevronIcon
+            open
+            className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"
+          />
         </div>
-        <input
-          type="text"
-          autoComplete="off"
-          value={modelDraft}
-          onChange={(e) => onModelDraft(e.target.value)}
-          placeholder="模型 id，例如 deepseek-v4-flash"
-          className={`mt-2.5 ${fieldClass}`}
-        />
-      </SettingsCard>
+        <button
+          type="button"
+          disabled={!presetsReady || addingPreset}
+          onClick={() => {
+            if (addingPresetRef.current) return
+            addingPresetRef.current = true
+            setAddingPreset(true)
+            void (async () => {
+              setError(null)
+              const preset = presets.find((row) => row.id === presetId)
+              try {
+                if (!preset || preset.inherit_base_url) {
+                  await createModelProfile({
+                    label: preset?.label || t('settings.profileNew'),
+                    model_id: preset?.model_id || 'kimi-k3',
+                  })
+                } else if (!preset.base_url.trim()) {
+                  setError(t('settings.createFailed'))
+                  return
+                } else {
+                  await createModelProfile({
+                    label: preset.label,
+                    base_url: preset.base_url,
+                    model_id: preset.model_id,
+                  })
+                }
+                applyList(await fetchModelProfiles())
+              } catch (err) {
+                setError(err instanceof Error ? err.message : t('settings.createFailed'))
+              } finally {
+                addingPresetRef.current = false
+                setAddingPreset(false)
+              }
+            })()
+          }}
+          className="shrink-0 rounded-xl border border-dashed border-[var(--border)] px-3 py-2 text-[14px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-h)] disabled:opacity-50"
+        >
+          {t('settings.addPreset')}
+        </button>
+      </div>
 
-      <SettingsCard title="生成参数">
+      <SettingsCard title={t('settings.genParams')} hint={t('settings.genParamsHint')}>
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-[13px] text-[var(--text-h)]">Temperature</div>
-              <div className="text-[11px] text-[var(--text-muted)]">{tempDraft.toFixed(2)} · 越高越发散</div>
+              <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.genTemp')}</div>
+              <div className="text-[14px] text-[var(--text-muted)]">
+                {t('settings.genTempHint', { value: tempDraft.toFixed(2) })}
+              </div>
             </div>
             <input
               type="range"
@@ -977,14 +1245,14 @@ function LlmProviderFields({
               max={2}
               step={0.05}
               value={tempDraft}
-              onChange={(e) => onTempDraft(Number(e.target.value))}
+              onChange={(e) => setTempDraft(Number(e.target.value))}
               className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
             />
           </div>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-[13px] text-[var(--text-h)]">Max Tokens</div>
-              <div className="text-[11px] text-[var(--text-muted)]">单次回复最大长度</div>
+              <div className="text-[14px] font-medium text-[var(--text-h)]">{t('settings.genTokens')}</div>
+              <div className="text-[14px] text-[var(--text-muted)]">{t('settings.genTokensHint')}</div>
             </div>
             <input
               type="number"
@@ -992,39 +1260,84 @@ function LlmProviderFields({
               max={200000}
               step={256}
               value={tokensDraft}
-              onChange={(e) => onTokensDraft(Number(e.target.value))}
-              className="w-28 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-right font-mono text-sm text-[var(--text-h)] outline-none focus:border-[var(--accent)]"
+              onChange={(e) => setTokensDraft(Number(e.target.value))}
+              className="w-28 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-right font-mono text-[14px] text-[var(--text-h)] outline-none focus:border-[var(--accent)]"
             />
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={
+                globalsSaving ||
+                (tempDraft === list.temperature && tokensDraft === list.max_tokens)
+              }
+              onClick={() => {
+                void (async () => {
+                  setGlobalsSaving(true)
+                  setError(null)
+                  try {
+                    applyList(
+                      await updateModelGlobals({
+                        temperature: tempDraft,
+                        max_tokens: tokensDraft,
+                      }),
+                    )
+                    setHint(t('settings.genSaved'))
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : t('settings.saveFailed'))
+                  } finally {
+                    setGlobalsSaving(false)
+                  }
+                })()
+              }}
+              className="rounded-md bg-[var(--accent-bg)] px-3 py-1.5 text-[14px] text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
+            >
+              {globalsSaving ? t('settings.saving') : t('settings.saveParams')}
+            </button>
           </div>
         </div>
       </SettingsCard>
 
-      <div className="flex items-center gap-3 pt-1">
-        <button
-          type="button"
-          disabled={saving || !dirty}
-          onClick={() =>
-            void onSave({
-              base_url: urlDraft.trim(),
-              default_model: modelDraft.trim(),
-              temperature: tempDraft,
-              max_tokens: tokensDraft,
-              ...(keyDraft.trim() ? { api_key: keyDraft.trim() } : {}),
-            })
-          }
-          className="rounded-md bg-[var(--accent-bg)] px-4 py-1.5 text-sm text-[var(--text-h)] hover:bg-[var(--surface-hover)] disabled:opacity-40"
-        >
-          {saving ? '保存中…' : '保存'}
-        </button>
-        {error && <p className="text-xs text-red-400">{error}</p>}
-        {savedHint && <p className="text-xs text-emerald-400">{savedHint}</p>}
-      </div>
+      {error && <p className="text-[14px] text-red-400">{error}</p>}
+      {hint && <p className="text-[14px] text-emerald-400">{hint}</p>}
     </div>
   )
 }
 
-const fieldClass =
-  'w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]'
+function ProfileRow({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = 'text',
+  last,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  type?: string
+  last?: boolean
+}) {
+  return (
+    <div
+      className={[
+        'flex items-center justify-between gap-3 px-3.5 py-2.5',
+        last ? '' : 'border-b border-[var(--border-subtle)]',
+      ].join(' ')}
+    >
+      <span className="shrink-0 text-[14px] text-[var(--text-muted)]">{label}</span>
+      <input
+        type={type}
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 border-0 bg-transparent text-right text-[14px] text-[var(--text-h)] outline-none placeholder:text-[var(--text-dim)] focus:ring-0"
+      />
+    </div>
+  )
+}
 
 function SettingsCard({
   title,
@@ -1037,9 +1350,9 @@ function SettingsCard({
 }) {
   return (
     <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
-      <div className="mb-2.5 flex items-center justify-between gap-2">
-        <h3 className="text-[13px] font-medium text-[var(--text-h)]">{title}</h3>
-        {hint && <span className="text-[10px] text-[var(--text-muted)]">{hint}</span>}
+      <div className="mb-2.5">
+        <h3 className="whitespace-nowrap text-[14px] font-medium text-[var(--text-h)]">{title}</h3>
+        {hint ? <div className="text-[14px] text-[var(--text-muted)]">{hint}</div> : null}
       </div>
       {children}
     </section>
@@ -1141,6 +1454,50 @@ function SettingsNavIcon({ name }: { name: SectionIcon }) {
   }
 }
 
+function SwitchControl({
+  checked,
+  onClick,
+  disabled,
+  ariaLabel,
+  onTrackClass = 'bg-[var(--text-h)]',
+  thumbClass = 'bg-[var(--bg)]',
+}: {
+  checked: boolean
+  onClick: () => void
+  disabled?: boolean
+  ariaLabel?: string
+  onTrackClass?: string
+  thumbClass?: string
+}) {
+  // 36×20 track, 14px knob, 3px inset on all sides (top+bottom pin).
+  // Avoids flex/half-pixel drift that made the knob hug one edge and look jagged.
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={onClick}
+      className={[
+        'relative box-border h-5 w-9 shrink-0 overflow-hidden rounded-full border-0 p-0 leading-none align-middle transition-colors',
+        checked ? onTrackClass : 'bg-[var(--border)]',
+        disabled ? 'cursor-not-allowed opacity-40' : '',
+      ].join(' ')}
+    >
+      <span
+        aria-hidden
+        className={[
+          'pointer-events-none absolute top-[3px] bottom-[3px] left-[3px] w-[14px] rounded-full',
+          'transition-transform duration-200 ease-out',
+          thumbClass,
+          checked ? 'translate-x-4' : 'translate-x-0',
+        ].join(' ')}
+      />
+    </button>
+  )
+}
+
 function Toggle({
   label,
   description,
@@ -1157,28 +1514,16 @@ function Toggle({
   return (
     <div className={`mb-2.5 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 ${disabled ? 'opacity-60' : ''}`}>
       <div>
-        <div className="text-[13px] text-[var(--text-h)]">{label}</div>
-        {description && <div className="text-[11px] text-[var(--text-muted)]">{description}</div>}
+        <div className="text-[14px] font-medium text-[var(--text-h)]">{label}</div>
+        {description && <div className="text-[14px] text-[var(--text-muted)]">{description}</div>}
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
+      <SwitchControl
+        checked={checked}
         disabled={disabled}
-        onClick={() => !disabled && onChange(!checked)}
-        className={[
-          'relative h-6 w-11 shrink-0 rounded-full transition-colors',
-          checked ? 'bg-[var(--text-h)]' : 'bg-[var(--border)]',
-          disabled ? 'cursor-not-allowed' : '',
-        ].join(' ')}
-      >
-        <span
-          className={[
-            'absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-[var(--bg)] transition-transform',
-            checked ? 'translate-x-5' : 'translate-x-0',
-          ].join(' ')}
-        />
-      </button>
+        onClick={() => {
+          if (!disabled) onChange(!checked)
+        }}
+      />
     </div>
   )
 }

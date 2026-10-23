@@ -1,9 +1,10 @@
-"""CLI configuration file support for Hal Agent.
+"""CLI configuration file support for Loop Agent.
 
 Priority (highest first):
 1. Environment variables (AGENT_BASE_URL)
-2. ~/.config/hal-agent/config.json
-3. Built-in defaults
+2. ~/.config/loop-agent/config.json
+3. ~/.config/hal-agent/config.json (previous name, read-only fallback)
+4. Built-in defaults
 """
 
 from __future__ import annotations
@@ -16,15 +17,19 @@ from typing import Any, Dict, Optional
 
 DEFAULT_BASE = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT = 120.0
-CONFIG_DIR = Path.home() / ".config" / "hal-agent"
+CONFIG_DIR = Path.home() / ".config" / "loop-agent"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+LEGACY_CONFIG_PATH = Path.home() / ".config" / "hal-agent" / "config.json"
 
 
 def _load_config_file() -> Dict[str, Any]:
-    if not CONFIG_PATH.exists():
+    path = CONFIG_PATH if CONFIG_PATH.is_file() else None
+    if path is None and LEGACY_CONFIG_PATH.is_file():
+        path = LEGACY_CONFIG_PATH
+    if path is None:
         return {}
     try:
-        raw = CONFIG_PATH.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception:

@@ -125,3 +125,22 @@ def test_session_audit_requires_existing_session(audit_env) -> None:
     assert all(e["session_id"] == sid for e in listed)
     assert any(e["event_type"] == "turn.complete" for e in listed)
     assert not any(e["session_id"] != sid for e in listed)
+
+
+def test_settings_update_audit_carries_session_id(audit_env) -> None:
+    client = audit_env.client
+    created = client.post("/api/sessions", json={"title": "settings-audit"})
+    assert created.status_code == 200
+    sid = created.json()["id"]
+
+    resp = client.put(
+        f"/api/settings?session_id={sid}",
+        json={"max_tool_iters": 20},
+    )
+    assert resp.status_code == 200
+
+    listed = client.get(f"/api/audit?session_id={sid}&event_type=settings.update&limit=10").json()
+    assert len(listed) >= 1
+    assert all(e["session_id"] == sid for e in listed)
+    assert all(e["event_type"] == "settings.update" for e in listed)
+    assert listed[0]["payload"].get("max_tool_iters") == 20

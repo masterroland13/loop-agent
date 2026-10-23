@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useT } from '../i18n'
 
 interface SearchPanelProps {
   isOpen: boolean
@@ -17,6 +18,7 @@ export function SearchPanel({
   onSelectSession,
   onSelectPair,
 }: SearchPanelProps) {
+  const t = useT()
   const [query, setQuery] = useState('')
 
   const results = useMemo(() => {
@@ -52,19 +54,19 @@ export function SearchPanel({
             onKeyDown={(e) => {
               if (e.key === 'Escape') onClose()
             }}
-            placeholder="搜索会话或消息..."
+            placeholder={t('common.searchSessions')}
             className="flex-1 bg-transparent text-sm text-[var(--text-h)] outline-none placeholder:text-[var(--text-dim)]"
           />
         </div>
 
         <div className="max-h-[50vh] overflow-y-auto p-2">
           {results.sessions.length === 0 && results.pairs.length === 0 ? (
-            <div className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">无匹配结果</div>
+            <div className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">{t('search.noMatch')}</div>
           ) : (
             <>
               {results.sessions.length > 0 && (
                 <div className="mb-2">
-                  <div className="px-3 py-1 text-[11px] uppercase tracking-wider text-[var(--text-dim)]">会话</div>
+                  <div className="px-3 py-1 text-[11px] uppercase tracking-wider text-[var(--text-dim)]">{t('search.sessionsSection')}</div>
                   {results.sessions.map((s) => (
                     <button
                       key={s.id}
@@ -82,7 +84,7 @@ export function SearchPanel({
               )}
               {results.pairs.length > 0 && (
                 <div>
-                  <div className="px-3 py-1 text-[11px] uppercase tracking-wider text-[var(--text-dim)]">当前会话消息</div>
+                  <div className="px-3 py-1 text-[11px] uppercase tracking-wider text-[var(--text-dim)]">{t('search.currentSessionMessages')}</div>
                   {results.pairs.map((p) => (
                     <button
                       key={p.id}

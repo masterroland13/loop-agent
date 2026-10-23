@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '../i18n'
 import type { PendingMemory } from '../types'
 
 interface MemoryPanelProps {
@@ -38,21 +39,36 @@ function MemoryCard({
   onApply: () => void
   onReject: () => void
 }) {
+  const t = useT()
   const pending = memory.status === 'pending'
   const rejected = memory.status === 'rejected'
   const [expanded, setExpanded] = useState(pending || rejected)
   const statusLabel =
     memory.status === 'applied'
-      ? '已写入'
+      ? t('gate.written')
       : memory.status === 'failed'
-        ? '失败'
+        ? t('gate.failed')
         : memory.status === 'timeout'
-          ? '超时'
+          ? t('gate.timeout')
           : rejected
-            ? '已拒绝'
+            ? t('gate.rejected')
             : pending
-              ? '待确认'
+              ? t('gate.pendingConfirm')
               : memory.status
+  const modeLabel =
+    memory.mode === 'append'
+      ? t('gate.modeAppend')
+      : memory.mode === 'add'
+        ? t('gate.modeAdd')
+        : memory.mode === 'remove'
+          ? t('gate.modeRemove')
+          : memory.mode === 'operations'
+            ? t('gate.modeBatch')
+            : memory.mode === 'replace' && (memory.op_summary || '').includes('→')
+              ? t('gate.modeReplace')
+              : memory.mode === 'replace'
+                ? t('gate.modeFile')
+                : memory.mode || t('gate.modeUpdate')
 
   return (
     <div
@@ -62,16 +78,19 @@ function MemoryCard({
           ? 'border-[var(--border)] border-l-2 border-l-[var(--accent-solid)] shadow-[0_0_28px_rgba(134,59,255,0.12)]'
           : 'border-[var(--border)]',
       ].join(' ')}
-    >      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
+    >
+      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
           className="min-w-0 flex-1 truncate text-left text-xs text-[var(--text-h)]"
         >
           <span className="mr-1 text-[var(--text-dim)]">{expanded ? '▾' : '▸'}</span>
-          记忆 USER.md
+          {t('gate.memoryLabel', {
+            target: memory.target === 'memory' ? 'MEMORY.md' : 'USER.md',
+          })}
           <span className="ml-1.5 font-mono text-[var(--text-muted)]">
-            ({memory.mode === 'append' ? '追加' : '替换'})
+            ({modeLabel})
           </span>
           <span
             className={[
@@ -96,7 +115,7 @@ function MemoryCard({
               onClick={onApply}
               className="rounded-md bg-[var(--accent-solid)] px-2.5 py-1 text-xs font-medium text-white transition-all hover:brightness-110 active:scale-[0.96] disabled:opacity-50"
             >
-              {busy ? '…' : 'Apply'}
+              {busy ? '…' : t('common.apply')}
             </button>
             <button
               type="button"
@@ -104,7 +123,7 @@ function MemoryCard({
               onClick={onReject}
               className="rounded-md border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-h)] disabled:opacity-50"
             >
-              Reject
+              {t('common.reject')}
             </button>
           </div>
         )}

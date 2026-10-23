@@ -46,6 +46,7 @@ def test_f9_assistant_conclusion_heuristic() -> None:
 def test_f9_scripted_turn2_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mocked agent loop for turn 2: Goal + tools + goal-aligned conclusion."""
     from agent_window.agent import loop as loop_mod
+    from agent_window.core.loop_config import LoopConfig
     from agent_window.services.provider import provider
 
     goal = extract_f9_turn2_goal([F9_USER_TURN1])
@@ -111,7 +112,11 @@ def test_f9_scripted_turn2_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _run() -> tuple[list[dict], str]:
         events: list[dict] = []
         final = ""
-        async for ev in loop_mod.run_agent_loop(history, goal=goal):
+        async for ev in loop_mod.run_agent_loop(
+            history,
+            goal=goal,
+            config=LoopConfig.default().with_goal_mode(True),
+        ):
             events.append(ev)
             if ev.get("type") == "token":
                 final += ev.get("content") or ""
@@ -129,6 +134,7 @@ def test_f9_scripted_turn2_loop(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_f9_no_blank_assistant_on_done(monkeypatch: pytest.MonkeyPatch) -> None:
     """F6: loop must finish with non-empty assistant content on happy path."""
     from agent_window.agent import loop as loop_mod
+    from agent_window.core.loop_config import LoopConfig
     from agent_window.services.provider import provider
 
     async def fake_chat(messages, tools=None, model=None):
@@ -156,6 +162,7 @@ def test_f9_no_blank_assistant_on_done(monkeypatch: pytest.MonkeyPatch) -> None:
         async for ev in loop_mod.run_agent_loop(
             [{"role": "user", "content": F9_USER_TURN2}],
             goal=goal,
+            config=LoopConfig.default().with_goal_mode(True),
         ):
             if ev.get("type") == "token":
                 text += ev.get("content") or ""

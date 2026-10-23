@@ -1,12 +1,12 @@
-# Hal Agent
+# Loop Agent
 
-可运行的 Hal Agent 对话窗口：左侧工作区/会话管理，中间问答流，右侧收藏与导航。  
+可运行的 Loop Agent 对话窗口：左侧工作区/会话管理，中间问答流，右侧收藏与导航。  
 前端 React + Vite；后端 FastAPI + SQLite + LiteLLM（OpenAI 兼容）。
 
 ## 目录结构
 
 ```
-hal-agent/
+loop-agent/
 ├── README.md                 # 项目说明（本文件）
 ├── package.json              # 前端依赖与 npm scripts
 ├── package-lock.json         # 依赖锁定版本
@@ -32,11 +32,19 @@ hal-agent/
 │   └── styles/
 │
 ├── backend/                  # 后端 FastAPI
-├── docs/                     # 产品/架构文档
+├── docs/                     # 产品/架构文档（见 docs/README.md 地图）
+│   ├── README.md             # 分层索引
+│   ├── architecture-charter.md
 │   ├── agent-window-roadmap.md
-│   └── v1-7-headless-cli-design.md
+│   ├── foundation-status.md
+│   ├── layer-boundaries.md
+│   ├── design/               # 定稿设计
+│   ├── archive/              # 冻结方案
+│   ├── research/             # 调研笔记
+│   └── dogfood/              # 人工狗粮清单
 ├── scripts/                  # 运维、冒烟与调试脚本（见 scripts/README.md）
 │   ├── start-dev.sh
+│   ├── restart-loop.sh
 │   ├── preview-server.mjs
 │   ├── rebuild-preview.sh
 │   ├── restart-uvicorn.sh
@@ -78,7 +86,7 @@ hal-agent/
 | 状态钩子    | `src/hooks/`      | 会话、消息、收藏、工作区、设置、主题 |
 | API 客户端 | `src/api/`        | REST / SSE         |
 | 样式      | `src/styles/`     | 设计 token、全局 CSS    |
-| 文档      | `docs/`           | 路线图等               |
+| 文档      | `docs/`           | 宪章/路线图/进度；子目录见 `docs/README.md` |
 | 脚本      | `scripts/`        | 启动、预览、重建、冒烟、调试 |
 | 日志      | `logs/`           | 本地运行日志             |
 | 后端      | `backend/`        | FastAPI + LLM + 存储 |

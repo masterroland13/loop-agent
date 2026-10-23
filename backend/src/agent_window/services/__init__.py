@@ -10,7 +10,10 @@ from agent_window.services.storage import (
     list_favorites,
     list_sessions,
     toggle_message_favorite,
+    update_session_goal_mode,
+    update_session_pinned_goal,
     update_session_title,
+    update_session_workspace_root,
 )
 
 __all__ = [
@@ -25,5 +28,8 @@ __all__ = [
     "list_favorites",
     "list_sessions",
     "toggle_message_favorite",
+    "update_session_goal_mode",
+    "update_session_pinned_goal",
     "update_session_title",
+    "update_session_workspace_root",
 ]

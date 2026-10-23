@@ -1,4 +1,4 @@
-"""Edit tools — propose only; disk write happens after user approval in the agent loop."""
+"""Edit tools — prepare only; settle/apply is tool_pipeline before_tool_call (Gate Step 3)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from agent_window.services.patches import (
 from agent_window.services.workspace import WorkspaceError
 from agent_window.tools.registry import registry
 
-# Marker consumed by agent loop — do not write to disk here.
+# Marker consumed by tool_pipeline settle (before_tool_call) — do not write to disk here.
 AWAIT_PATCH_KEY = "__await_patch__"
 
 

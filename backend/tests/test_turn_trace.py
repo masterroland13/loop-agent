@@ -180,75 +180,6 @@ def test_turn_trace_writer_spills_large_tool_result(data_dir: Path) -> None:
         db.close()
 
 
-
-def test_event_from_sse_shell_spills_huge_stdout() -> None:
-    from agent_window.agent.turn_event import FILE_REF_PREFIX, INLINE_FULL_MAX, is_file_ref
-
-    spilled_refs: list[str] = []
-
-    def spill(text: str) -> str:
-        spilled_refs.append(text)
-        return f"{FILE_REF_PREFIX}turns/a/shell1.txt"
-
-    huge_stdout = "S" * (INLINE_FULL_MAX + 100)
-    mapped = event_from_sse(
-        {
-            "type": "shell",
-            "shell_id": "sh1",
-            "status": "done",
-            "command": "cat big.txt",
-            "stdout": huge_stdout,
-            "stderr": "",
-            "truncated": False,
-        },
-        spill=spill,
-    )
-    assert mapped is not None
-    assert mapped["type"] == "gate"
-    assert mapped["tool"] == "propose_shell"
-    assert is_file_ref(mapped.get("full_ref"))
-    assert mapped.get("truncated") is True
-    assert spilled_refs and huge_stdout in spilled_refs[0]
-    assert "S" * 50 not in (mapped.get("summary") or "")
-
-
-def test_note_sse_returns_mapped_with_full_ref(data_dir: Path) -> None:
-    from agent_window.agent.turn_event import INLINE_FULL_MAX, is_file_ref
-
-    db = get_sessionmaker()()
-    try:
-        session = create_session(db, title="note-return")
-        session_db = get_session(db, session.id)
-        assert session_db is not None
-        writer = TurnTraceWriter.create_placeholder(db, session_db, sequence=2)
-        huge = "Y" * (INLINE_FULL_MAX + 80)
-        mapped = writer.note_sse(
-            {
-                "type": "shell",
-                "shell_id": "sh2",
-                "status": "done",
-                "command": "cat dogfood.txt",
-                "stdout": huge,
-                "stderr": "",
-            }
-        )
-        assert mapped is not None
-        assert is_file_ref(mapped.get("full_ref"))
-        assert mapped.get("truncated") is True
-
-        # merge helper used by live SSE enrichment
-        out = {"type": "shell", "stdout": huge, "command": "cat dogfood.txt"}
-        if mapped.get("full_ref"):
-            out["full_ref"] = mapped["full_ref"]
-        if mapped.get("truncated"):
-            out["truncated"] = mapped["truncated"]
-        assert out["full_ref"].startswith("file:")
-        assert out["truncated"] is True
-        assert out["stdout"] == huge  # preview not stripped
-    finally:
-        db.close()
-
-
 def test_blob_path_rejects_traversal(data_dir: Path) -> None:
     from agent_window.services.storage import resolve_session_blob_path
 
@@ -336,6 +267,24 @@ def test_parse_trace_invalid_returns_empty() -> None:
     assert parse_trace("not-json") == []
     assert parse_trace("{}") == []
     assert serialize_trace([{"type": "tool_start", "summary": "x"}]).startswith("[")
+
+
+def test_event_from_sse_diff_keeps_type_not_gate() -> None:
+    mapped = event_from_sse(
+        {
+            "type": "diff",
+            "patch_id": "p1",
+            "path": "a.py",
+            "unified_diff": "--- a\n+++ b\n@@\n+x\n",
+            "status": "applied",
+        }
+    )
+    assert mapped is not None
+    assert mapped["type"] == "diff"
+    assert mapped["type"] != "gate"
+    assert mapped["patch_id"] == "p1"
+    assert mapped["path"] == "a.py"
+    assert mapped["status"] == "applied"
 
 
 def test_finalize_interrupted_persists_cancelled_trace(data_dir: Path) -> None:

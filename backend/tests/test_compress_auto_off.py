@@ -34,16 +34,16 @@ def test_auto_compress_off_returns_messages_untouched() -> None:
             preserve_goal=goal,
         )
 
-    out, compressed = asyncio.run(_run())
+    out, compressed, meta = asyncio.run(_run())
     # 行为：不压缩、消息逐条原样返回
     assert compressed is False
+    assert meta.method == "none"
     assert out == messages
     # 反向断言：不注入目标块、不生成摘要块
     assert not messages_contain_goal(out, goal)
     assert not any(
-        m.get("role") == "system"
-        and isinstance(m.get("content"), str)
-        and "压缩摘要" in m["content"]
+        isinstance(m.get("content"), str)
+        and ("压缩摘要" in m["content"] or "【对话压缩摘要】" in m["content"])
         for m in out
     )
 
@@ -59,12 +59,17 @@ def test_auto_compress_on_same_input_does_compress() -> None:
             context_limit=200,
         )
 
-    out, compressed = asyncio.run(_run())
+    out, compressed, _meta = asyncio.run(_run())
     assert compressed is True
     assert len(out) < len(messages)
     assert any(
+        isinstance(m.get("content"), str)
+        and ("压缩摘要" in m["content"] or "【对话压缩摘要】" in m["content"])
+        for m in out
+    )
+    assert not any(
         m.get("role") == "system"
         and isinstance(m.get("content"), str)
-        and "压缩摘要" in m["content"]
+        and "【对话压缩摘要】" in m["content"]
         for m in out
     )

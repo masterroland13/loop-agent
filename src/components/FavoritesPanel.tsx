@@ -1,4 +1,5 @@
 import type { FavoriteItem } from '../api/agent'
+import { useT } from '../i18n'
 
 interface FavoritesPanelProps {
   favorites: FavoriteItem[]
@@ -17,6 +18,7 @@ export function FavoritesPanel({
   onUnfavorite,
   formatPreview,
 }: FavoritesPanelProps) {
+  const t = useT()
   if (!isOpen) return null
 
   return (
@@ -24,7 +26,7 @@ export function FavoritesPanel({
       <div className="flex-1 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div className="flex h-full w-80 flex-col border-l border-[var(--border)] bg-[var(--bg-elevated)]">
         <div className="flex h-12 items-center justify-between px-4">
-          <span className="text-sm font-medium text-[var(--text-h)]">收藏内容</span>
+          <span className="text-sm font-medium text-[var(--text-h)]">{t('favorites.title')}</span>
           <button
             type="button"
             onClick={onClose}
@@ -38,7 +40,7 @@ export function FavoritesPanel({
 
         <div className="flex-1 overflow-y-auto px-3 pb-3">
           {favorites.length === 0 ? (
-            <p className="py-12 text-center text-sm text-[var(--text-muted)]">暂无收藏</p>
+            <p className="py-12 text-center text-sm text-[var(--text-muted)]">{t('favorites.empty')}</p>
           ) : (
             <ul className="flex flex-col gap-1.5">
               {favorites.map((item) => (

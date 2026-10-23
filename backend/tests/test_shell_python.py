@@ -13,7 +13,7 @@ def test_normalize_bare_python_uses_venv(tmp_path: Path, monkeypatch: pytest.Mon
     venv_py = tmp_path / ".venv" / "bin" / "python"
     venv_py.parent.mkdir(parents=True)
     venv_py.write_text("", encoding="utf-8")
-    monkeypatch.setattr(shell_mod, "resolve_hal_python", lambda: str(venv_py))
+    monkeypatch.setattr(shell_mod, "resolve_loop_python", lambda: str(venv_py))
 
     out = shell_mod.normalize_shell_argv(["python", "-m", "pytest", "-q"])
     assert out[0] == str(venv_py)
@@ -32,7 +32,7 @@ def test_normalize_leaves_python3_and_paths() -> None:
 def test_normalize_falls_back_to_python3(monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_window.services import shell as shell_mod
 
-    monkeypatch.setattr(shell_mod, "resolve_hal_python", lambda: "python3")
+    monkeypatch.setattr(shell_mod, "resolve_loop_python", lambda: "python3")
     out = shell_mod.normalize_shell_argv(["python", "scripts/a.py"])
     assert out == ["python3", "scripts/a.py"]
     assert out[0] != "python"
@@ -51,7 +51,7 @@ def test_create_shell_proposal_rewrites_display(tmp_path: Path, monkeypatch: pyt
 
     venv_py = tmp_path / "fake-python"
     venv_py.write_text("", encoding="utf-8")
-    monkeypatch.setattr(shell_mod, "resolve_hal_python", lambda: str(venv_py))
+    monkeypatch.setattr(shell_mod, "resolve_loop_python", lambda: str(venv_py))
 
     item = shell_mod.create_shell_proposal(["python", "-m", "pytest"], cwd=".")
     assert item.argv[0] == str(venv_py)

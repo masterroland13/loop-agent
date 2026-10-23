@@ -1,9 +1,20 @@
 import { useState } from 'react'
-import type { MessagePair, ToolTraceItem } from '../types'
-import { ChevronIcon } from './ChevronIcon'
+import type { MessagePair } from '../types'
 import { Markdown } from './Markdown'
-import { ToolTimeline } from './ToolTimeline'
+import { TurnActivity, type GateFocusTarget } from './TurnActivity'
+import { useWorkedForLabel, WorkedForText } from './WorkedForText'
 import { UserMessageCard } from './UserMessageCard'
+import { useT } from '../i18n'
+
+/** Strip leading 「目标：」 so the strip label does not read「目标 目标：…」. */
+function formatGoalBody(goal: string): string {
+  const t = goal.trim()
+  const stripped = t.replace(/^(目标|Goal)\s*[:：]\s*/i, '').trim()
+  return stripped || t
+}
+
+const EMPTY_WORKED =
+  'text-[15px] font-normal leading-[1.8] tracking-[0.02em] text-[var(--text-muted)]'
 
 interface MessagePairItemProps {
   pair: MessagePair
@@ -21,13 +32,18 @@ interface MessagePairItemProps {
   onExpandedAttach?: () => void
   onToggleFavorite: (id: string) => void
   onRetry?: (pairId: string) => void
-  onRetryToolStep?: (pairId: string, item: ToolTraceItem) => void
+  onContinueSoftLand?: (pairId: string) => void
+  onFocusGate?: (target: GateFocusTarget) => void
   setItemRef: (index: number) => (element: HTMLDivElement | null) => void
   inputToolbar?: {
-    onModelClick?: () => void
-    onThisPc?: () => void
+    onModelClick?: (anchor: DOMRect) => void
     onRemoveAttachment?: (localKey: string) => void
-    pcMode?: boolean
+    goalMode?: boolean
+    onGoalModeToggle?: () => void
+    onMultitask?: () => void
+    onPlanIdea?: () => void
+    pinnedGoal?: string | null
+    onPinnedGoalChange?: (goal: string | null) => void
     modelName?: string
     enterToSend?: boolean
     disabled?: boolean
@@ -50,19 +66,27 @@ export function MessagePairItem({
   onExpandedAttach,
   onToggleFavorite,
   onRetry,
-  onRetryToolStep,
+  onContinueSoftLand,
+  onFocusGate,
   setItemRef,
   inputToolbar,
 }: MessagePairItemProps) {
+  const t = useT()
   const [copied, setCopied] = useState(false)
-  const hasTools = Boolean(pair.toolTrace && pair.toolTrace.length > 0)
+  const hasActivity = Boolean(pair.activity?.segments?.length)
+  const hasTools = hasActivity || Boolean(pair.toolTrace && pair.toolTrace.length > 0)
   const goalText = pair.goal || pair.turnMeta?.goal
   const previousGoal = pair.previousGoal
   const goalChanged = Boolean(previousGoal && goalText && previousGoal !== goalText)
-  const checkpoint = pair.progressCheckpoint
   const turnBusy = Boolean(isStreaming || pair.turnInProgress)
   const isLastAssistantEmpty = turnBusy && !pair.assistant.content && !hasTools
   const isUserExpanded = expandedUserPairId === pair.id
+  const turnStartedAt =
+    pair.activityStartedAt ?? pair.assistant.createdAt ?? pair.user.createdAt
+  const emptyWorkedLabel = useWorkedForLabel(turnStartedAt, {
+    elapsedMs: pair.turnMeta?.elapsed_ms,
+    isStreaming: isLastAssistantEmpty && !awaitingApproval,
+  })
 
   const handleCopy = async () => {
     const text = `User:\n${pair.user.content}\n\nAgent:\n${pair.assistant.content}`
@@ -88,9 +112,13 @@ export function MessagePairItem({
         onSend={onExpandedSend}
         onAttach={onExpandedAttach}
         onModelClick={inputToolbar?.onModelClick}
-        onThisPc={inputToolbar?.onThisPc}
         onRemoveAttachment={inputToolbar?.onRemoveAttachment}
-        pcMode={inputToolbar?.pcMode}
+        goalMode={inputToolbar?.goalMode}
+        onGoalModeToggle={inputToolbar?.onGoalModeToggle}
+        onMultitask={inputToolbar?.onMultitask}
+        onPlanIdea={inputToolbar?.onPlanIdea}
+        pinnedGoal={inputToolbar?.pinnedGoal}
+        onPinnedGoalChange={inputToolbar?.onPinnedGoalChange}
         modelName={inputToolbar?.modelName}
         enterToSend={inputToolbar?.enterToSend}
         isStreaming={Boolean(isStreaming)}
@@ -100,70 +128,42 @@ export function MessagePairItem({
       <div className="relative pl-0.5">
         {goalText ? (
           <div
-            className="mb-2 max-w-full truncate rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] leading-5 text-[var(--text-h)]"
+            className="mb-3 max-w-full truncate rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] leading-5 text-[var(--text-h)]"
             title={goalChanged ? `${previousGoal} → ${goalText}` : goalText}
           >
             <span className="mr-1.5 font-medium text-[var(--text-muted)]">
-              {goalChanged ? '目标 · 已变更' : '目标'}
+              {goalChanged ? t('message.goalChanged') : t('message.goal')}
             </span>
-            {goalText}
+            {formatGoalBody(goalText)}
           </div>
         ) : null}
-        {checkpoint ? (
-          <details className="group mb-2 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[13px] leading-5 text-[var(--text-muted)]">
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[13px] leading-5 text-[var(--text-h)] [&::-webkit-details-marker]:hidden">
-              <ChevronIcon className="shrink-0 text-[var(--text-muted)] rotate-0 group-open:rotate-90" />
-              <span className="min-w-0 flex-1 truncate text-[13px] font-normal leading-5 tracking-normal">
-                {`检查点 · ${
-                  checkpoint.reason === 'gate'
-                    ? '审批返回'
-                    : `已用 ${checkpoint.toolsSinceLast} 次工具`
-                } · 对照目标 · ${
-                  checkpoint.reply
-                    ? '有进度说明'
-                    : checkpoint.settled || !turnBusy
-                      ? '无进度说明'
-                      : '等待说明'
-                }`}
-              </span>
-            </summary>
-            {checkpoint.reply ? (
-              <p className="mt-2 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--text-h)]">
-                {checkpoint.reply}
-              </p>
-            ) : null}
-          </details>
-        ) : null}
-        {hasTools && (
-          <ToolTimeline
-            items={pair.toolTrace!}
+
+        {hasActivity ? (
+          <TurnActivity
+            snapshot={pair.activity}
+            startedAt={pair.activityStartedAt}
+            elapsedMs={pair.turnMeta?.elapsed_ms}
             isStreaming={turnBusy}
-            sessionId={sessionId}
-            onRetryStep={
-              onRetryToolStep
-                ? (item) => onRetryToolStep(pair.id, item)
-                : undefined
-            }
+            onFocusGate={onFocusGate}
           />
-        )}
+        ) : null}
 
         {pair.turnInProgress && !isStreaming && hasTools && (
-          <div className="mt-2 text-sm text-[var(--text-muted)]">后台生成中…</div>
+          <div className="mt-2 text-sm text-[var(--text-muted)]">{t('message.background')}</div>
         )}
 
         {pair.failed && !pair.assistant.content && hasTools && (
-          <div className="mt-2 text-sm text-red-300/90">已停止</div>
+          <div className="mt-2 text-sm text-red-300/90">{t('message.stopped')}</div>
         )}
 
         {isLastAssistantEmpty ? (
-          <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
-            <span className="inline-flex gap-1">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-muted)]" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-muted)] [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--text-muted)] [animation-delay:300ms]" />
-            </span>
-            {awaitingApproval ? '等待审批…' : '思考中…'}
-          </div>
+          awaitingApproval ? (
+            <div className={EMPTY_WORKED}>{t('message.waitingApproval')}</div>
+          ) : (
+            <div className="text-[15px] font-normal leading-[1.8] tracking-[0.02em]">
+              <WorkedForText shimmer>{emptyWorkedLabel}</WorkedForText>
+            </div>
+          )
         ) : pair.assistant.content ? (
           <div
             className={[
@@ -171,6 +171,27 @@ export function MessagePairItem({
               pair.failed ? 'text-red-300/90' : 'text-[var(--text-h)]',
             ].join(' ')}
           >
+            {pair.softLanded ? (
+              <div className="mb-2 flex flex-wrap items-center gap-2 rounded border border-amber-700/80 bg-amber-950/35 px-2 py-1.5 text-xs font-normal tracking-normal text-amber-100">
+                <span className="min-w-0 flex-1">
+                  {t('message.softLand')}
+                </span>
+                {onContinueSoftLand && !isStreaming && !pair.turnInProgress ? (
+                  <button
+                    type="button"
+                    title={t('message.softLandContinue')}
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onContinueSoftLand(pair.id)
+                    }}
+                    className="shrink-0 rounded border border-amber-500/50 bg-amber-900/50 px-2 py-0.5 text-amber-50 hover:bg-amber-800/60"
+                  >
+                    {t('common.continue')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <Markdown content={pair.assistant.content} />
             {isStreaming && (
               <span className="ml-1.5 inline-block h-3.5 w-[7px] animate-pulse rounded-[2px] bg-[var(--accent)] align-[-2px]" />
@@ -178,7 +199,7 @@ export function MessagePairItem({
           </div>
         ) : isStreaming && hasTools ? (
           <div className="text-sm text-[var(--text-muted)]">
-            {awaitingApproval ? '等待你审批改动或命令…' : '整理结果…'}
+            {awaitingApproval ? t('message.waitingApprovalShort') : t('message.summarizing')}
           </div>
         ) : null}
 
@@ -187,48 +208,48 @@ export function MessagePairItem({
             {pair.turnMeta && (
               <button
                 type="button"
-                title="复制回合 Meta JSON"
+                title={t('message.copyMeta')}
                 onClick={async (e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  await navigator.clipboard.writeText(JSON.stringify(pair.turnMeta, null, 2))
+                  const payload = {
+                    ...pair.turnMeta,
+                    session_id: sessionId ?? null,
+                  }
+                  await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
                   setCopied(true)
                   setTimeout(() => setCopied(false), 1500)
                 }}
                 className="rounded-md px-1.5 py-1 font-mono text-[12px] font-normal leading-5 tracking-wide text-[var(--text-muted)] hover:text-[var(--text-h)]"
               >
                 {[
-                  pair.turnMeta.goal ? '目标' : null,
+                  sessionId || null,
+                  pair.turnMeta.goal ? t('message.metaGoal') : null,
                   pair.turnMeta.model,
                   `${(pair.turnMeta.elapsed_ms / 1000).toFixed(1)}s`,
                   `~${pair.turnMeta.approx_prompt_tokens}+${pair.turnMeta.approx_completion_tokens}`,
-                  pair.turnMeta.compressed ? '压缩' : null,
-                  pair.turnMeta.memory_injected ? '记忆' : null,
+                  pair.turnMeta.compressed ? t('message.metaCompressed') : null,
+                  pair.turnMeta.memory_injected ? t('message.metaMemory') : null,
                 ]
                   .filter(Boolean)
                   .join(' · ')}
               </button>
             )}
-            <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <div className="flex items-center gap-1">
             {pair.assistant.content && (
-              <ActionBtn title={copied ? '已复制' : '复制'} pressed={copied} onClick={handleCopy}>
-                <rect x="9" y="9" width="13" height="13" rx="2" />
-                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-              </ActionBtn>
+              <ActionBtn title={copied ? t('common.copied') : t('common.copy')} pressed={copied} onClick={handleCopy} icon="copy" />
             )}
             <ActionBtn
-              title={pair.isFavorite ? '取消收藏' : '收藏'}
+              title={pair.isFavorite ? t('common.unfavorite') : t('common.favorite')}
               pressed={pair.isFavorite}
               onClick={() => onToggleFavorite(pair.id)}
-              star
-            >
-              <path d="M12 3.5l2.472 5.008 5.528.804-4 3.898.944 5.504L12 16.27l-4.944 2.444.944-5.504-4-3.898 5.528-.804L12 3.5z" />
-            </ActionBtn>
+              icon="star"
+            />
             </div>
             {pair.failed && onRetry && !isStreaming && (
               <button
                 type="button"
-                title="重试本轮"
+                title={t('common.retry')}
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
@@ -236,7 +257,7 @@ export function MessagePairItem({
                 }}
                 className="rounded-md border border-red-400/30 px-2 py-1 text-xs text-red-300/90 hover:bg-red-400/10"
               >
-                重试
+                {t('common.retry')}
               </button>
             )}
           </div>
@@ -250,20 +271,19 @@ function ActionBtn({
   title,
   onClick,
   pressed,
-  star,
-  children,
+  icon,
 }: {
   title: string
   onClick: () => void
   pressed?: boolean
-  star?: boolean
-  children: React.ReactNode
+  icon: 'copy' | 'star'
 }) {
+  const active = Boolean(pressed)
   return (
     <button
       type="button"
       title={title}
-      aria-pressed={Boolean(pressed)}
+      aria-pressed={active}
       onClick={(e) => {
         e.preventDefault()
         e.stopPropagation()
@@ -271,23 +291,34 @@ function ActionBtn({
       }}
       className={[
         'inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors',
-        pressed && star
+        active && icon === 'star'
           ? 'text-[var(--star)]'
-          : pressed
+          : active
             ? 'text-[var(--text-h)]'
-            : 'text-[var(--text-dim)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-muted)]',
+            : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]',
       ].join(' ')}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
         viewBox="0 0 24 24"
-        fill={pressed && star ? 'currentColor' : 'none'}
+        fill={active && icon === 'star' ? 'currentColor' : 'none'}
         stroke="currentColor"
-        strokeWidth={1.75}
-        className="h-3.5 w-3.5"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-4 w-4"
         aria-hidden
       >
-        {children}
+        {icon === 'copy' ? (
+          <>
+            {/* Lucide / Cursor copy — same geometry as ContextMenuIcons.MenuCopyIcon */}
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+          </>
+        ) : (
+          /* Lucide star — smooth 5-point, fills cleanly when favorited */
+          <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />
+        )}
       </svg>
     </button>
   )

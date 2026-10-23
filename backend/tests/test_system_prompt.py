@@ -29,10 +29,15 @@ def _build_prompt() -> str:
 def test_default_prompt_without_files(ws: Path) -> None:
     prompt = _build_prompt()
     assert "helpful coding assistant" in prompt
+    assert "Loop Agent" in prompt
+    assert "do not call it Hal Agent" in prompt
+    assert "Hal Agent / Loop Agent" not in prompt
     assert "propose_edit" in prompt
     assert "propose_delete" in prompt
     assert "do not use rm" in prompt
     assert "read_attachment" in prompt
+    assert "multimodal content" in prompt
+    assert "do NOT call read_attachment on images" in prompt
     # Attachment-only turns: read + verbal summary; no silent workspace writes.
     assert "（见附件）" in prompt
     assert "do NOT call propose_edit" in prompt
@@ -40,6 +45,11 @@ def test_default_prompt_without_files(ws: Path) -> None:
     assert "invent helper scripts" in prompt
     # Must still allow writes when user explicitly asks.
     assert "create, edit, or run something" in prompt
+    assert "do NOT call propose_edit" not in "irrelevant"
+    # Inline backticks: spare ordinary English / booleans / every filename.
+    assert "行内反引号" in prompt
+    assert "不要给普通英文词" in prompt
+    assert "把附件保存为 workspace 文件" in prompt or "save/write/persist an attachment" in prompt
 
 
 def test_attachment_only_rule_absent_when_system_md_overrides(ws: Path) -> None:

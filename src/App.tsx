@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   emitAudit,
   fetchHealth,
-  fetchModels,
+  fetchModelProfiles,
   fetchRuntime,
   fetchWorkspace,
   getMessages,
+  getSession,
+  setApiErrorLocale,
   setWorkspace,
   toggleMessageFavorite,
   type FavoriteItem,
@@ -14,22 +16,27 @@ import {
 import { ChatInput } from './components/ChatInput'
 import { DiffPanel } from './components/DiffPanel'
 import { FavoritesPanel } from './components/FavoritesPanel'
+import { FilesPanel, FilesPanelToggleIcon } from './components/FilesPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { MessageList } from './components/MessageList'
 import { MessageNavigator } from './components/MessageNavigator'
 import { ModelPicker } from './components/ModelPicker'
-import { FALLBACK_MODELS } from './components/modelFallbacks'
 import { SearchPanel } from './components/SearchPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ShellPanel } from './components/ShellPanel'
 import { Sidebar } from './components/Sidebar'
+import { SurfaceHost, type SurfaceKind } from './components/SurfaceHost'
+import type { GateFocusTarget } from './components/TurnActivity'
 import { WorkspacePicker } from './components/WorkspacePicker'
 import { useGlobalFavorites } from './hooks/useFavorites'
 import { useMessagePairs } from './hooks/useMessagePairs'
 import { applyFontSize, applyTheme, useSettings } from './hooks/useSettings'
+import { I18nProvider, translate } from './i18n'
 import { useApiSessions } from './hooks/useSessions'
 import { useSessionMeta } from './hooks/useSessionMeta'
 import { uploadAttachment } from './api/agent'
+import { buildMessagePairs } from './utils/turnTrace'
+import { buildSoftLandContinueMessage } from './utils/softLandContinue'
 import {
   canSendDraft,
   draftContentForSend,
@@ -41,6 +48,7 @@ import {
   normalizeRoot,
   projectIdFromRoot,
   useWorkspaces,
+  UNBOUND_PROJECT_ID,
 } from './hooks/useWorkspaces'
 
 const MODEL_KEY = 'agent-chat:model'
@@ -68,7 +76,7 @@ function App() {
     sidebarWidth,
     switchProject,
     upsertProjectFromRoot,
-    reclaimOrphanSessionsToProject,
+    reclaimSessionsToProject,
     assignSessionToProject,
     syncSessionsFromServer,
     removeSessionFromProject,
@@ -79,15 +87,21 @@ function App() {
   } = useWorkspaces()
 
   const { isDark, toggleTheme, setTheme } = useTheme()
-  const { settings, update: updateSetting, toggleSkill: toggleActiveSkill } = useSettings()
   const [showSettings, setShowSettings] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [modelPickerAnchor, setModelPickerAnchor] = useState<DOMRect | null>(null)
   const [modelName, setModelName] = useState(loadModel)
+  const modelSyncedSessionRef = useRef<string | null>(null)
+  const modelFallbackRef = useRef<
+    (modelId: string, profileId?: string | null, sessionId?: string) => void
+  >(() => {})
   const [toast, setToast] = useState<string | null>(null)
-  const [pcMode, setPcMode] = useState(false)
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const [workspace, setWorkspaceState] = useState<WorkspaceStatus | null>(null)
+  const [activeSurface, setActiveSurface] = useState<SurfaceKind>('none')
+  /** Once Files has been opened, keep it mounted (hidden) so tabs/dirty survive collapse. */
+  const [filesMounted, setFilesMounted] = useState(false)
 
   const {
     sessions,
@@ -99,7 +113,21 @@ function App() {
     updateSessionTitle,
     renameSession,
     deleteSession,
+    bindSessionToWorkspace,
+    replaceSession,
+    notePrompt,
+    setSessionModel,
+    goalMode,
+    setGoalMode,
+    pinnedGoal,
+    setPinnedGoal,
   } = useApiSessions(assignSessionToProject, removeSessionFromProject)
+
+  const { settings, update: updateSetting, toggleSkill: toggleActiveSkill } = useSettings(activeSessionId)
+
+  useEffect(() => {
+    setApiErrorLocale(settings.language)
+  }, [settings.language])
 
   const {
     isPinned,
@@ -145,8 +173,32 @@ function App() {
     applyPendingMemory,
     rejectPendingMemory,
     retryLastFailed,
-    retryToolStep,
-  } = useMessagePairs(activeSessionId, updateSessionTitle, refreshFavorites, modelName)
+    isPairsHydrating,
+    warmSession,
+  } = useMessagePairs(
+    activeSessionId,
+    updateSessionTitle,
+    refreshFavorites,
+    sessions.find((s) => s.id === activeSessionId)?.model_id || undefined,
+    (fallbackModel, profileId, sessionId) =>
+      modelFallbackRef.current(fallbackModel, profileId, sessionId),
+    Boolean(sessions.find((s) => s.id === activeSessionId)?.title_locked),
+    notePrompt,
+  )
+
+  const handleContinueSoftLand = useCallback(
+    (pairId: string) => {
+      if (isStreaming || awaitingApproval) return
+      const pair = pairs.find((p) => p.id === pairId)
+      if (!pair?.softLanded) return
+      const content = buildSoftLandContinueMessage({
+        turnGoal: pair.goal || pair.turnMeta?.goal,
+        softLandReply: pair.assistant.content,
+      })
+      sendMessage(content)
+    },
+    [isStreaming, awaitingApproval, pairs, sendMessage],
+  )
 
   const [showFavorites, setShowFavorites] = useState(false)
   const [inputValue, setInputValue] = useState('')
@@ -161,6 +213,8 @@ function App() {
   const prevSessionIdRef = useRef<string | null>(null)
   const streamingSessionIdRef = useRef<string | null>(null)
   const wasStreamingRef = useRef(false)
+  const [busySessionIds, setBusySessionIds] = useState<string[]>([])
+  const prevBusySessionIdsRef = useRef<Set<string>>(new Set())
   const inputValueRef = useRef('')
   const attachedFilesRef = useRef<ChatAttachment[]>([])
   inputValueRef.current = inputValue
@@ -169,6 +223,15 @@ function App() {
   const [pendingFavoriteId, setPendingFavoriteId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const approvalAreaRef = useRef<HTMLDivElement>(null)
+  const [gateFocus, setGateFocus] = useState<GateFocusTarget | null>(null)
+  const gateFocusClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleFocusGate = useCallback((target: GateFocusTarget) => {
+    if (gateFocusClearRef.current) clearTimeout(gateFocusClearRef.current)
+    setGateFocus(target)
+    approvalAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    gateFocusClearRef.current = setTimeout(() => setGateFocus(null), 2500)
+  }, [])
 
   // Auto-scroll to approval cards when they appear
   useEffect(() => {
@@ -176,6 +239,12 @@ function App() {
       approvalAreaRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
   }, [awaitingApproval])
+
+  useEffect(() => {
+    return () => {
+      if (gateFocusClearRef.current) clearTimeout(gateFocusClearRef.current)
+    }
+  }, [])
 
   const favoriteIndexMap = useMemo(() => {
     const map = new Map<string, number>()
@@ -185,13 +254,62 @@ function App() {
     return map
   }, [pairs])
 
-  const isEmpty = pairs.length === 0 && !isStreaming
+  const isEmpty = pairs.length === 0 && !isStreaming && !isPairsHydrating
   const globalError = sessionError || messageError
+  const activeSessionTitle =
+    sessions.find((s) => s.id === activeSessionId)?.title?.trim() ||
+    translate(settings.language, 'appExtra.newChatTitle')
 
   const showToast = useCallback((message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(null), 2200)
   }, [])
+
+  modelFallbackRef.current = (fallbackModel, profileId, sessionId) => {
+    const sid = sessionId || activeSessionId
+    if (!sid) return
+    const current = sessions.find((s) => s.id === sid)
+    if (current) {
+      replaceSession({
+        ...current,
+        model_id: fallbackModel,
+        profile_id: profileId || current.profile_id,
+      })
+    }
+    if (sid !== activeSessionId) return
+    modelSyncedSessionRef.current = sid
+    setModelName(fallbackModel)
+    showToast(translate(settings.language, 'errors.modelProfileFallback'))
+  }
+
+  const activeSessionModelId =
+    sessions.find((s) => s.id === activeSessionId)?.model_id ?? null
+  const activeSessionLoaded = sessions.some((s) => s.id === activeSessionId)
+
+  useEffect(() => {
+    if (!activeSessionId || !activeSessionLoaded) return
+    if (modelSyncedSessionRef.current === activeSessionId) return
+    modelSyncedSessionRef.current = activeSessionId
+    if (activeSessionModelId) {
+      setModelName(activeSessionModelId)
+      return
+    }
+    let cancelled = false
+    fetchModelProfiles()
+      .then((list) => {
+        if (cancelled || modelSyncedSessionRef.current !== activeSessionId) return
+        const active =
+          list.profiles.find((p) => p.id === list.active_id && p.enabled) ??
+          list.profiles.find((p) => p.enabled)
+        if (active?.model_id) setModelName(active.model_id)
+      })
+      .catch(() => {
+        // legacy row: the send omits model and the server uses the active profile
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSessionId, activeSessionLoaded, activeSessionModelId])
 
   useEffect(() => {
     for (const s of sessions) {
@@ -200,37 +318,92 @@ function App() {
   }, [sessions, touchSeen])
 
   const sidebarSessions = useMemo(() => {
+    const busy = new Set(busySessionIds)
+    if (isStreaming && activeSessionId) busy.add(activeSessionId)
     const mapped = sessions.map((s) => {
       const unread = isUnread(s.id, s.updated_at)
       const isActive = s.id === activeSessionId
+      const isBusy = busy.has(s.id)
       return {
         id: s.id,
         title: s.title,
         updatedAt: s.updated_at,
+        promptAt: s.last_prompt_at || s.created_at,
         isActive,
         isPinned: isPinned(s.id),
         isUnread: unread,
-        showUnreadDot: unread && (!isActive || isManuallyUnread(s.id)),
+        isBusy,
+        showUnreadDot: unread && !isBusy && (!isActive || isManuallyUnread(s.id)),
       }
     })
     return sortSessions(mapped)
-  }, [sessions, activeSessionId, isUnread, isManuallyUnread, isPinned, sortSessions])
+  }, [
+    sessions,
+    activeSessionId,
+    isUnread,
+    isManuallyUnread,
+    isPinned,
+    sortSessions,
+    busySessionIds,
+    isStreaming,
+  ])
+
+  // Poll which sessions still have a running agent turn (sidebar title shimmer).
+  useEffect(() => {
+    let cancelled = false
+    async function tick() {
+      try {
+        const runtime = await fetchRuntime()
+        if (cancelled) return
+        setBusySessionIds(runtime.active_sessions || [])
+      } catch {
+        // ignore
+      }
+    }
+    void tick()
+    const id = window.setInterval(() => {
+      void tick()
+    }, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [])
+
+  // Background turn finished → unread; finished while viewing → mark read.
+  useEffect(() => {
+    const prev = prevBusySessionIdsRef.current
+    const next = new Set(busySessionIds)
+    for (const id of prev) {
+      if (next.has(id)) continue
+      if (id !== activeSessionId) {
+        markUnread(id)
+      } else {
+        const session = sessions.find((s) => s.id === id)
+        const now = new Date().toISOString()
+        const stamp =
+          session?.updated_at && session.updated_at > now ? session.updated_at : now
+        markRead(id, stamp)
+      }
+    }
+    prevBusySessionIdsRef.current = next
+  }, [busySessionIds, activeSessionId, markUnread, markRead, sessions])
 
   const activateProject = useCallback(
     async (projectId: string) => {
+      if (projectId === activeProjectId) return
       switchProject(projectId)
       const project = projects.find((p) => p.id === projectId)
       if (project?.root) {
         try {
           const status = await setWorkspace(project.root)
           setWorkspaceState(status)
-          setPcMode(status.configured)
         } catch {
-          showToast('切换工作区失败')
+          showToast(translate(settings.language, 'app.switchWorkspaceFailed'))
         }
       }
     },
-    [projects, switchProject, showToast],
+    [activeProjectId, projects, switchProject, showToast],
   )
 
   const handleSwitchSession = useCallback(
@@ -252,23 +425,45 @@ function App() {
     }
     if (!isStreaming && wasStreamingRef.current) {
       const streamId = streamingSessionIdRef.current
-      if (streamId) {
-        if (activeSessionId !== streamId) {
-          markUnread(streamId)
-        } else {
-          const session = sessions.find((s) => s.id === streamId)
-          markRead(streamId, session?.updated_at)
-        }
+      // Only mark-read when the user watched this session finish.
+      // Do NOT markUnread here: switching sessions also clears isStreaming while
+      // the background turn may still be running (Phase 1 detach).
+      if (streamId && activeSessionId === streamId) {
+        const session = sessions.find((s) => s.id === streamId)
+        const now = new Date().toISOString()
+        const stamp =
+          session?.updated_at && session.updated_at > now ? session.updated_at : now
+        markRead(streamId, stamp)
       }
       streamingSessionIdRef.current = null
     }
     wasStreamingRef.current = isStreaming
-  }, [isStreaming, activeSessionId, markUnread, markRead, sessions])
+  }, [isStreaming, activeSessionId, markRead, sessions])
+
+  // While viewing a session, keep it read as updated_at advances (e.g. post-stream
+  // list refresh). Skip manual "Mark as Unread". Prevents a false blue dot after
+  // leaving a session the user already watched to completion.
+  useEffect(() => {
+    if (!activeSessionId || isStreaming) return
+    if (isManuallyUnread(activeSessionId)) return
+    const session = sessions.find((s) => s.id === activeSessionId)
+    if (!session?.updated_at) return
+    if (isUnread(activeSessionId, session.updated_at)) {
+      markRead(activeSessionId, session.updated_at)
+    }
+  }, [
+    activeSessionId,
+    isStreaming,
+    sessions,
+    isManuallyUnread,
+    isUnread,
+    markRead,
+  ])
 
   const handleCopySessionId = useCallback(
     (sessionId: string) => {
       void navigator.clipboard.writeText(sessionId).then(
-        () => showToast('已复制 Agent ID'),
+        () => showToast(translate(settings.language, 'app.copiedAgentId')),
         () => showToast(sessionId),
       )
     },
@@ -278,17 +473,24 @@ function App() {
   const handleCopyTranscript = useCallback(
     async (sessionId: string) => {
       try {
-        const messages = await getMessages(sessionId)
-        const md = messages
-          .map((m) => {
-            const heading = m.role === 'user' ? 'User' : 'Assistant'
-            return `### ${heading}\n\n${m.content}`
+        const [messages, session] = await Promise.all([
+          getMessages(sessionId),
+          getSession(sessionId).catch(() => null),
+        ])
+        const pairs = buildMessagePairs(messages, session?.leaf_id)
+        const md = pairs
+          .map((p) => {
+            const user = `### User\n\n${p.user.content}`
+            const asst = p.assistant.content
+              ? `### Assistant\n\n${p.assistant.content}`
+              : null
+            return [user, asst].filter(Boolean).join('\n\n')
           })
           .join('\n\n')
         await navigator.clipboard.writeText(md)
-        showToast('已复制对话记录')
+        showToast(translate(settings.language, 'app.copiedTranscript'))
       } catch {
-        showToast('复制失败')
+        showToast(translate(settings.language, 'app.copyFailed'))
       }
     },
     [showToast],
@@ -308,7 +510,7 @@ function App() {
         try {
           const prev = sessionStorage.getItem(BOOT_KEY)
           if (prev && prev !== runtime.boot_id) {
-            showToast('后端已重启，待审批项已从服务端恢复')
+            showToast(translate(settings.language, 'app.backendRestarted'))
           }
           sessionStorage.setItem(BOOT_KEY, runtime.boot_id)
         } catch {
@@ -324,7 +526,6 @@ function App() {
     fetchWorkspace()
       .then((ws) => {
         setWorkspaceState(ws)
-        setPcMode(ws.configured)
         if (ws.configured && ws.root) {
           const projectId = upsertProjectFromRoot(ws.root, ws.name || undefined, false)
           // Defer reclaim until sessions are loaded (effect below); stash id on ws via state.
@@ -333,26 +534,6 @@ function App() {
       })
       .catch(() => {
         setWorkspaceState(null)
-        setPcMode(false)
-      })
-    fetchModels()
-      .then((res) => {
-        const ids = new Set(res.models.map((m) => m.id))
-        const saved = loadModel()
-        const staleFallback = FALLBACK_MODELS.includes(saved)
-        if (ids.size > 0 && !ids.has(saved) && staleFallback) {
-          const next = ids.has(res.default) ? res.default : res.models[0].id
-          setModelName(next)
-          try {
-            localStorage.setItem(MODEL_KEY, next)
-          } catch {
-            // ignore
-          }
-          showToast(`模型「${saved}」不在新网关列表，已切换为 ${next}`)
-        }
-      })
-      .catch(() => {
-        // keep local selection
       })
   }, [showToast, upsertProjectFromRoot])
 
@@ -360,13 +541,13 @@ function App() {
   useEffect(() => {
     if (!workspace?.configured || !workspace.root) return
     const projectId = upsertProjectFromRoot(workspace.root, workspace.name || undefined, false)
-    reclaimOrphanSessionsToProject(projectId)
+    reclaimSessionsToProject(projectId)
   }, [
     workspace?.configured,
     workspace?.root,
     workspace?.name,
     upsertProjectFromRoot,
-    reclaimOrphanSessionsToProject,
+    reclaimSessionsToProject,
   ])
 
   // Hard-bind: upsert projects from server workspace_root and sync session map.
@@ -571,12 +752,13 @@ function App() {
     e.target.value = ''
     if (!file) return
     if (!activeSessionId) {
-      showToast('请先选择会话再上传附件')
+      showToast(translate(settings.language, 'app.pickSessionFirst'))
       return
     }
 
     const target = fileUploadTargetRef.current
     const localKey = `local-${Date.now()}-${file.name}`
+    const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
     const pending: ChatAttachment = {
       localKey,
       name: file.name,
@@ -584,6 +766,7 @@ function App() {
       status: 'pending',
       size: file.size,
       contentType: file.type || undefined,
+      previewUrl,
     }
     upsertAttachment(pending, target)
 
@@ -600,11 +783,12 @@ function App() {
         },
         target,
       )
-      showToast(`已上传 ${file.name}`)
+      showToast(translate(settings.language, 'app.uploaded', { name: file.name }))
     } catch (err) {
-      const message = err instanceof Error ? err.message : '上传失败'
-      upsertAttachment({ ...pending, status: 'error', error: message }, target)
-      showToast(`上传失败：${file.name}`)
+      const message = err instanceof Error ? err.message : translate(settings.language, 'appExtra.uploadFailedGeneric')
+      if (previewUrl) URL.revokeObjectURL(previewUrl)
+      upsertAttachment({ ...pending, status: 'error', error: message, previewUrl: undefined }, target)
+      showToast(translate(settings.language, 'app.uploadFailed', { name: file.name }))
     }
   }
 
@@ -628,24 +812,71 @@ function App() {
   }
 
   const handlePlanIdea = () => {
-    setInputValue(
-      '帮我规划一个新想法：\n1. 目标\n2. 关键步骤\n3. 风险与备选方案\n\n我的想法是：',
-    )
-    showToast('已填入规划模板，补充想法后发送')
+    const text =
+      translate(settings.language, 'appExtra.planTemplate')
+    if (expandedUser) {
+      setExpandedUser((prev) => (prev ? { ...prev, draft: text } : prev))
+    } else {
+      setInputValue(text)
+    }
+    showToast(translate(settings.language, 'app.planFilled'))
   }
 
   const handleMultitask = () => {
-    setInputValue('请把下面任务拆成可并行的子任务，并给出优先级：\n- ')
-    showToast('已填入多任务模板')
+    const text = translate(settings.language, 'appExtra.multitaskTemplate')
+    if (expandedUser) {
+      setExpandedUser((prev) => (prev ? { ...prev, draft: text } : prev))
+    } else {
+      setInputValue(text)
+    }
+    showToast(translate(settings.language, 'app.multitaskFilled'))
   }
 
-  const handleThisPc = () => {
-    setShowWorkspacePicker(true)
-  }
+  const handleAddFileToChat = useCallback(
+    (relativePath: string) => {
+      const token = `@${relativePath.replace(/^@+/, '')}`
+      const insert = (prev: string) => {
+        if (!prev.trim()) return `${token} `
+        const sep = prev.endsWith(' ') || prev.endsWith('\n') ? '' : ' '
+        return `${prev}${sep}${token} `
+      }
+      if (expandedUser) {
+        setExpandedUser((prev) => (prev ? { ...prev, draft: insert(prev.draft) } : prev))
+      } else {
+        setInputValue((prev) => insert(prev))
+      }
+      showToast(translate(settings.language, 'app.tokenAdded', { token }))
+    },
+    [expandedUser, showToast],
+  )
+
+  const handleBindSessionToProject = useCallback(
+    async (sessionId: string, project: (typeof projects)[number]) => {
+      const root = (project.root ?? '').trim()
+      if (!root || project.id === UNBOUND_PROJECT_ID) return
+      try {
+        await bindSessionToWorkspace(sessionId, root)
+        assignSessionToProject(sessionId, project.id)
+        if (sessionId === activeSessionId) {
+          await activateProject(project.id)
+        }
+        showToast(translate(settings.language, 'app.movedWorkspace', { name: project.name }))
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : translate(settings.language, 'app.bindFailed'))
+        throw err
+      }
+    },
+    [
+      bindSessionToWorkspace,
+      assignSessionToProject,
+      activeSessionId,
+      activateProject,
+      showToast,
+    ],
+  )
 
   const handleWorkspaceSaved = (status: WorkspaceStatus) => {
     setWorkspaceState(status)
-    setPcMode(status.configured)
     if (status.configured && status.root) {
       const projectId = upsertProjectFromRoot(status.root, status.name || undefined)
       if (activeSessionId) {
@@ -654,23 +885,43 @@ function App() {
     }
     showToast(
       status.configured
-        ? `已绑定工作区：${status.name || status.root}`
-        : '已清除工作区绑定',
+        ? translate(settings.language, 'app.workspaceBound', {
+            name: status.name || status.root || '',
+          })
+        : translate(settings.language, 'app.workspaceCleared'),
     )
   }
 
-  const handleModelSelect = (model: string) => {
+  const handleModelSelect = (model: string, profileId?: string | null) => {
     const prev = modelName
+    const current = sessions.find((s) => s.id === activeSessionId)
     setModelName(model)
-    try {
-      localStorage.setItem(MODEL_KEY, model)
-    } catch {
-      // ignore
+    if (!profileId) {
+      try {
+        localStorage.setItem(MODEL_KEY, model)
+      } catch {
+        // last typed id only; a profile pick is stored on the session
+      }
+    }
+    if (activeSessionId && current) {
+      modelSyncedSessionRef.current = activeSessionId
+      replaceSession({
+        ...current,
+        model_id: model,
+        profile_id: profileId || current.profile_id,
+      })
+      const patch: { model_id: string; profile_id?: string } = { model_id: model }
+      if (profileId) patch.profile_id = profileId
+      void setSessionModel(activeSessionId, patch).catch(() => {
+        replaceSession(current)
+        setModelName(prev)
+        showToast(translate(settings.language, 'app.bindFailed'))
+      })
     }
     if (model !== prev) {
       emitAudit('model.switch', { from: prev, to: model }, activeSessionId || undefined).catch(() => {})
     }
-    showToast(`已切换模型：${model}`)
+    showToast(translate(settings.language, 'app.modelSwitched', { model }))
   }
 
   const handleSettingChange = <K extends keyof typeof settings>(key: K, value: (typeof settings)[K]) => {
@@ -686,19 +937,53 @@ function App() {
   const inputBusy = isStreaming || awaitingApproval
   const userCardExpanded = expandedUser !== null
 
+  const handleGoalModeToggle = () => {
+    if (!activeSessionId) return
+    void setGoalMode(!goalMode)
+  }
+
+  const openModelPicker = (rect: DOMRect) => {
+    setShowModelPicker((open) => {
+      if (open) {
+        setModelPickerAnchor(null)
+        return false
+      }
+      setModelPickerAnchor(rect)
+      return true
+    })
+  }
+
+  const closeModelPicker = () => {
+    setShowModelPicker(false)
+    setModelPickerAnchor(null)
+  }
+
   const inputToolbar = {
-    onModelClick: () => setShowModelPicker(true),
-    onThisPc: handleThisPc,
+    onModelClick: openModelPicker,
     onRemoveAttachment: (localKey: string) => {
+      const revoke = (list: ChatAttachment[]) => {
+        const hit = list.find((a) => a.localKey === localKey)
+        if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl)
+        return list.filter((a) => a.localKey !== localKey)
+      }
       if (expandedUser) {
         setExpandedUser((prev) =>
-          prev ? { ...prev, attachedFiles: prev.attachedFiles.filter((a) => a.localKey !== localKey) } : prev,
+          prev ? { ...prev, attachedFiles: revoke(prev.attachedFiles) } : prev,
         )
       } else {
-        setAttachedFiles((prev) => prev.filter((a) => a.localKey !== localKey))
+        setAttachedFiles((prev) => revoke(prev))
       }
     },
-    pcMode,
+    goalMode,
+    onGoalModeToggle: activeSessionId ? handleGoalModeToggle : undefined,
+    onMultitask: handleMultitask,
+    onPlanIdea: handlePlanIdea,
+    pinnedGoal,
+    onPinnedGoalChange: activeSessionId
+      ? (goal: string | null) => {
+          void setPinnedGoal(goal)
+        }
+      : undefined,
     modelName,
     enterToSend: settings.enterToSend,
     disabled: !activeSessionId || inputBusy,
@@ -710,25 +995,38 @@ function App() {
     onSend: handleSend,
     onStop: stopStreaming,
     onAttach: handleUploadClick,
-    onModelClick: () => setShowModelPicker(true),
-    onThisPc: handleThisPc,
-    pcMode,
+    onModelClick: openModelPicker,
+    goalMode,
+    onGoalModeToggle: activeSessionId ? handleGoalModeToggle : undefined,
+    onMultitask: handleMultitask,
+    onPlanIdea: handlePlanIdea,
+    pinnedGoal,
+    onPinnedGoalChange: activeSessionId
+      ? (goal: string | null) => {
+          void setPinnedGoal(goal)
+        }
+      : undefined,
     isStreaming: inputBusy,
     disabled: !activeSessionId || userCardExpanded,
     dimmed: userCardExpanded,
     attachments: attachedFiles,
     onRemoveAttachment: (localKey: string) =>
-      setAttachedFiles((prev) => prev.filter((a) => a.localKey !== localKey)),
+      setAttachedFiles((prev) => {
+        const hit = prev.find((a) => a.localKey === localKey)
+        if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl)
+        return prev.filter((a) => a.localKey !== localKey)
+      }),
     modelName,
     enterToSend: settings.enterToSend,
   }
 
   return (
+    <I18nProvider locale={settings.language}>
     <div className="flex h-dvh w-full overflow-hidden bg-[var(--bg)]">
       <input
         ref={fileInputRef}
         type="file"
-        accept="*/*"
+        accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.ts,.tsx,.js,.jsx,.zip,.log,*/*"
         className="hidden"
         onChange={handleFileChange}
       />
@@ -757,6 +1055,7 @@ function App() {
         }}
         onOpenFavorites={() => setShowFavorites(true)}
         onSwitchSession={handleSwitchSession}
+        onWarmSession={warmSession}
         onNewSession={(projectId) => {
           void handleNewSession(projectId)
         }}
@@ -770,14 +1069,15 @@ function App() {
         onMarkUnread={markUnread}
         onCopySessionId={handleCopySessionId}
         onCopyTranscript={handleCopyTranscript}
+        onBindSessionToProject={handleBindSessionToProject}
         onDeleteSession={async (id) => {
           if (isStreaming) return
           draftBySessionRef.current.delete(id)
           try {
             await deleteSession(id)
-            showToast('已删除对话')
+            showToast(translate(settings.language, 'app.deletedChat'))
           } catch {
-            showToast('删除失败，请重试')
+            showToast(translate(settings.language, 'app.deleteFailed'))
           }
         }}
         onRenameSession={async (id, newTitle) => {
@@ -786,42 +1086,53 @@ function App() {
       />
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-11 shrink-0 items-center justify-end gap-2 px-4">
-          {activeSessionId && (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 min-w-[440px] flex-1 flex-col overflow-hidden">
+        <header className="flex h-10 shrink-0 items-center gap-3 border-b border-[var(--border-subtle)] px-4">
+          <h1
+            className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--text-h)]"
+            title={activeSessionTitle}
+          >
+            {activeSessionTitle}
+          </h1>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {providerAvailable === false && (
+              <span className="rounded-[var(--radius-pill)] bg-amber-900/30 px-2 py-0.5 text-[11px] text-amber-400">
+                {translate(settings.language, 'appExtra.llmUnconfigured')}
+              </span>
+            )}
             <button
               type="button"
-              title="点击复制 session id（dogfood / curl 用）"
+              title={
+                activeSurface === 'files'
+                  ? translate(settings.language, 'app.closeFiles')
+                  : translate(settings.language, 'app.openFiles')
+              }
+              aria-label={
+                activeSurface === 'files'
+                  ? translate(settings.language, 'app.closeFiles')
+                  : translate(settings.language, 'app.openFiles')
+              }
+              aria-pressed={activeSurface === 'files'}
               onClick={() => {
-                void navigator.clipboard.writeText(activeSessionId).then(
-                  () => showToast(`已复制 session id`),
-                  () => showToast(activeSessionId),
-                )
+                if (activeSurface === 'files') {
+                  setActiveSurface('none')
+                } else {
+                  setFilesMounted(true)
+                  setActiveSurface('files')
+                }
               }}
-              className="max-w-[220px] truncate rounded-[var(--radius-pill)] bg-[var(--surface-hover)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-dim)] hover:text-[var(--text-muted)]"
+              className={[
+                'flex h-8 w-8 items-center justify-center rounded-lg transition-colors',
+                activeSurface === 'files'
+                  ? 'text-[var(--text-h)] hover:bg-[var(--surface-hover)]'
+                  : 'text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]',
+              ].join(' ')}
             >
-              {activeSessionId}
+              <FilesPanelToggleIcon expanded={activeSurface === 'files'} />
             </button>
-          )}
-          {pcMode && workspace?.root && (
-            <span
-              title={workspace.root}
-              className="max-w-[280px] truncate rounded-[var(--radius-pill)] bg-[var(--accent-bg)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-muted)]"
-            >
-              {workspace.name || workspace.root}
-            </span>
-          )}
-          {pcMode && !workspace?.root && (
-            <span className="rounded-[var(--radius-pill)] bg-[var(--accent-bg)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-              This PC
-            </span>
-          )}
-          {providerAvailable === false && (
-            <span className="rounded-[var(--radius-pill)] bg-amber-900/30 px-2 py-0.5 text-[11px] text-amber-400">
-              LLM 未配置
-            </span>
-          )}
+          </div>
         </header>
-
         {globalError && (
           <div className="mx-4 mb-2 rounded-lg border border-red-900/50 bg-red-950/20 px-3 py-2 text-sm text-red-400">
             {globalError}
@@ -833,7 +1144,7 @@ function App() {
             <div className="flex flex-1 flex-col items-center justify-center">
               <div className="mb-[10vh] flex w-full max-w-[640px] flex-col items-stretch gap-3">
                 <div className="mb-7 flex flex-col items-center gap-4 text-center">
-                  <img src="/favicon.svg" alt="Hal Agent" className="h-14 w-14 drop-shadow-[0_0_24px_rgba(134,59,255,0.35)]" />
+                  <img src="/favicon.svg" alt="Loop Agent" className="h-14 w-14 drop-shadow-[0_0_24px_rgba(134,59,255,0.35)]" />
                   <h1 className="text-[22px] font-semibold tracking-tight text-[var(--text-h)]">
                     What can I help you with?
                   </h1>
@@ -841,6 +1152,7 @@ function App() {
                 <DiffPanel
                   patches={pendingPatches}
                   busyId={patchBusyId}
+                  focusId={gateFocus?.kind === 'patch' ? gateFocus.id : null}
                   onApply={applyPendingPatch}
                   onReject={rejectPendingPatch}
                   onApplyPartial={applyPartialPatch}
@@ -849,6 +1161,7 @@ function App() {
                 <ShellPanel
                   shells={pendingShells}
                   busyId={shellBusyId}
+                  focusId={gateFocus?.kind === 'shell' ? gateFocus.id : null}
                   onApply={applyPendingShell}
                   onReject={rejectPendingShell}
                   onRetry={retryPendingShell}
@@ -861,14 +1174,29 @@ function App() {
                 />
                 <ChatInput
                   {...inputProps}
-                  onThisPc={undefined}
                   variant="center"
-                  placeholder="Plan, Build, / for skills, @ for context"
+                  placeholder={translate(settings.language, 'app.emptyPlaceholder')}
                 />
                 <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
-                  <PillButton label="Plan New Idea" shortcut="⇧Tab" onClick={handlePlanIdea} />
-                  <PillButton label="Multitask" onClick={handleMultitask} />
-                  <ThisPcButton active={pcMode} onClick={handleThisPc} />
+                  <PillButton
+                    label="Goal"
+                    pressed={goalMode}
+                    disabled={!activeSessionId || inputBusy}
+                    title={
+                      goalMode
+                        ? translate(settings.language, 'appExtra.goalOn')
+                        : translate(settings.language, 'appExtra.goalOff')
+                    }
+                    onClick={handleGoalModeToggle}
+                  />
+                  <PillButton
+                    label={translate(settings.language, 'chat.multitask')}
+                    onClick={handleMultitask}
+                  />
+                  <PillButton
+                    label={translate(settings.language, 'chat.planIdea')}
+                    onClick={handlePlanIdea}
+                  />
                 </div>
               </div>
             </div>
@@ -894,19 +1222,21 @@ function App() {
               onExpandedAttach={handleExpandedAttach}
               onToggleFavorite={toggleFavorite}
               onRetry={retryLastFailed}
-              onRetryToolStep={retryToolStep}
+              onContinueSoftLand={handleContinueSoftLand}
+              onFocusGate={handleFocusGate}
               setItemRef={setItemRef}
               inputToolbar={inputToolbar}
             />
 
             <div
-              className="flex max-h-[42vh] shrink-0 flex-col overflow-hidden px-6 pb-4 pt-2"
+              className="mx-auto flex w-full max-w-3xl max-h-[42vh] shrink-0 flex-col overflow-hidden px-6 pb-7 pt-2"
               ref={approvalAreaRef}
             >
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 <DiffPanel
                   patches={pendingPatches}
                   busyId={patchBusyId}
+                  focusId={gateFocus?.kind === 'patch' ? gateFocus.id : null}
                   onApply={applyPendingPatch}
                   onReject={rejectPendingPatch}
                   onApplyPartial={applyPartialPatch}
@@ -915,6 +1245,7 @@ function App() {
                 <ShellPanel
                   shells={pendingShells}
                   busyId={shellBusyId}
+                  focusId={gateFocus?.kind === 'shell' ? gateFocus.id : null}
                   onApply={applyPendingShell}
                   onReject={rejectPendingShell}
                   onRetry={retryPendingShell}
@@ -926,17 +1257,17 @@ function App() {
                   onReject={rejectPendingMemory}
                 />
                 {awaitingApproval && (
-                  <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-[var(--text-muted)]">
-                    等待你审批上方的改动、命令或记忆（Apply / Run / Reject）后，Agent 才会继续…
+                  <p className="mb-2 text-center text-xs text-[var(--text-muted)]">
+                    {translate(settings.language, 'appExtra.awaitingGate')}
                   </p>
                 )}
               </div>
-              <ChatInput {...inputProps} variant="bottom" placeholder="Send follow-up" />
+              <ChatInput {...inputProps} variant="bottom" placeholder={translate(settings.language, 'app.sendFollowUp')} />
             </div>
           </>
         )}
 
-        {pairs.length > 0 && (
+        {pairs.length > 0 && activeSurface !== 'files' && (
           <MessageNavigator
             currentIndex={currentIndex}
             total={pairs.length}
@@ -944,6 +1275,28 @@ function App() {
             onNext={goNext}
           />
         )}
+          </div>
+
+          {/* Keep mounted when closed so open tabs / dirty buffers survive. */}
+          {filesMounted ? (
+            <SurfaceHost
+              surface="files"
+              visible={activeSurface === 'files'}
+              onClose={() => setActiveSurface('none')}
+            >
+              {({ onClose }) => (
+                <FilesPanel
+                  workspaceConfigured={Boolean(workspace?.configured)}
+                  workspaceName={workspace?.name || workspace?.root}
+                  workspaceRoot={workspace?.root}
+                  onOpenWorkspace={() => setShowWorkspacePicker(true)}
+                  onAddToChat={handleAddFileToChat}
+                  onClose={onClose}
+                />
+              )}
+            </SurfaceHost>
+          ) : null}
+        </div>
 
         <FavoritesPanel
           favorites={favorites}
@@ -983,7 +1336,9 @@ function App() {
         <ModelPicker
           isOpen={showModelPicker}
           current={modelName}
-          onClose={() => setShowModelPicker(false)}
+          currentProfileId={sessions.find((s) => s.id === activeSessionId)?.profile_id}
+          anchor={modelPickerAnchor}
+          onClose={closeModelPicker}
           onSelect={handleModelSelect}
         />
 
@@ -1000,52 +1355,38 @@ function App() {
         )}
       </div>
     </div>
+    </I18nProvider>
   )
 }
 
 function PillButton({
   label,
-  shortcut,
   onClick,
+  pressed,
+  disabled,
+  title,
 }: {
   label: string
-  shortcut?: string
   onClick: () => void
+  pressed?: boolean
+  disabled?: boolean
+  title?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-10 items-center gap-2.5 rounded-full border border-[var(--input-border)] bg-[var(--input-bg)] px-4 text-sm text-[var(--text-muted)] transition-colors hover:border-[var(--input-focus)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]"
-    >
-      <span className="font-medium">{label}</span>
-      {shortcut && (
-        <span className="rounded-md bg-[var(--surface-hover)] px-2 py-1 text-xs leading-none text-[var(--text-dim)]">
-          {shortcut}
-        </span>
-      )}
-    </button>
-  )
-}
-
-function ThisPcButton({ active, onClick }: { active: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="绑定本机工作区目录"
+      disabled={disabled}
+      aria-pressed={pressed}
+      title={title}
       className={[
-        'inline-flex h-10 items-center gap-2 rounded-full border px-4 text-sm transition-colors',
-        active
-          ? 'border-[var(--input-focus)] bg-[var(--accent-bg)] text-[var(--text-h)]'
-          : 'border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--text-muted)] hover:border-[var(--input-focus)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-h)]',
+        'composer-chip inline-flex h-10 items-center rounded-full px-4 text-sm disabled:opacity-40',
+        pressed
+          ? 'border-[var(--accent-solid)] bg-[var(--accent-solid)] text-white'
+          : 'border-[var(--input-border)] text-[var(--text-muted)] hover:text-[var(--text-h)]',
       ].join(' ')}
     >
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className="h-4 w-4">
-        <rect x="3" y="4" width="18" height="14" rx="2" />
-        <path d="M8 20h8M12 18v2" />
-      </svg>
-      <span className="font-medium">This PC</span>
+      <span className="relative top-[-1px] leading-none font-medium">{label}</span>
     </button>
   )
 }
