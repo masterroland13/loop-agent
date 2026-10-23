@@ -625,7 +625,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_gate_flags(p_reject)
     p_reject.set_defaults(func=cmd_reject)
 
+    p_shell = sub.add_parser(
+        "shell",
+        help="Open the Loop Agent window; stop the runtime when the window closes",
+    )
+    p_shell.set_defaults(func=cmd_shell)
+
     return parser
+
+
+def cmd_shell(_client: RuntimeClient, _args: argparse.Namespace) -> int:
+    from agent_window.host.session import ShellError, run_shell
+
+    try:
+        return run_shell()
+    except (ShellError, OSError) as exc:
+        _eprint(str(exc))
+        return 1
 
 
 def main(argv: Optional[List[str]] = None) -> int:

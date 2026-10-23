@@ -27,6 +27,7 @@ import { ShellPanel } from './components/ShellPanel'
 import { Sidebar } from './components/Sidebar'
 import { SurfaceHost, type SurfaceKind } from './components/SurfaceHost'
 import type { GateFocusTarget } from './components/TurnActivity'
+import { SetupWizard } from './components/SetupWizard'
 import { WorkspacePicker } from './components/WorkspacePicker'
 import { useGlobalFavorites } from './hooks/useFavorites'
 import { useMessagePairs } from './hooks/useMessagePairs'
@@ -1347,6 +1348,35 @@ function App() {
           onClose={() => setShowWorkspacePicker(false)}
           onSaved={handleWorkspaceSaved}
         />
+
+        {workspace && !workspace.configured && (
+          <SetupWizard
+            onModelSaved={(modelId, profileId) => {
+              if (activeSessionId) {
+                const current = sessions.find((item) => item.id === activeSessionId)
+                if (current) {
+                  replaceSession({ ...current, model_id: modelId, profile_id: profileId })
+                }
+                modelSyncedSessionRef.current = activeSessionId
+              }
+              setModelName(modelId)
+              fetchHealth()
+                .then((health) => setProviderAvailable(health.provider_available))
+                .catch(() => setProviderAvailable(false))
+            }}
+            onReady={(status) => {
+              handleWorkspaceSaved(status)
+              if (status.configured && status.root && activeSessionId) {
+                bindSessionToWorkspace(activeSessionId, status.root).catch(() => {
+                  // The folder is already the workspace. The chat row can be moved later.
+                })
+              }
+              fetchHealth()
+                .then((health) => setProviderAvailable(health.provider_available))
+                .catch(() => setProviderAvailable(false))
+            }}
+          />
+        )}
 
         {toast && (
           <div className="pointer-events-none absolute bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-sm text-[var(--text-h)] shadow-lg">

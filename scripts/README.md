@@ -5,6 +5,7 @@
 | 脚本 | 作用 |
 |------|------|
 | `start-dev.sh` | 启动后端（8000）；提示如何开前端 |
+| `loop shell` | 打开桌面窗口；关窗停掉它自己拉起的后端和界面 |
 | `restart-loop.sh` | 重启前后端 |
 | `rebuild-preview.sh` | 构建前端并重启 vite preview |
 | `preview-server.mjs` | Windows 侧预览静态 `dist/` |

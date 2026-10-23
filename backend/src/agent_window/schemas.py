@@ -146,6 +146,15 @@ class WorkspaceSetRequest(BaseModel):
     root: str = Field(..., min_length=1, max_length=4096)
 
 
+class WorkspaceMkdirRequest(BaseModel):
+    parent: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class WorkspaceMkdirResponse(BaseModel):
+    path: str
+
+
 class WorkspaceBrowseResponse(BaseModel):
     path: str
     parent: str | None = None

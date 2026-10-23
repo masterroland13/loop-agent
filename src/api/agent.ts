@@ -420,6 +420,15 @@ export async function browseWorkspace(path?: string): Promise<WorkspaceBrowse> {
   return response.json()
 }
 
+export async function createWorkspaceFolder(parent: string, name: string): Promise<{ path: string }> {
+  const response = await apiFetch('/api/workspace/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent, name }),
+  })
+  return response.json()
+}
+
 export interface WorkspaceFileEntry {
   name: string
   path: string

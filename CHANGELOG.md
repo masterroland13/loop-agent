@@ -9,6 +9,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 ## [Unreleased]
 
 ### Added
+- **首次向导：** 工作区还没绑定时，窗口先让用户填一个模型（Base URL / API Key / Model ID，可从带地址的预置填入），再选已有文件夹或在当前位置新建。新建只建子文件夹，点「使用此文件夹」才绑定。已绑定工作区的开发服务不会出现这一步。`loop shell` 拉起的后端不读 `backend/.env`。
+- **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端和界面。关窗后这两个进程停掉。这份数据目录不带工作区，也不动开发用的 `backend/data`。窗口端口是 8765 / 8766，避开正在跑的 8000 / 5173。
 - **会话级模型档案：** 新会话抄当前档案；顶栏选择写入当前会话（`profile_id` + `model_id`）；并行会话各用各的网关 client。设置可从 Moonshot、DeepSeek、OpenRouter 等 OpenAI 兼容预置开卡。密钥存放说明见 [`docs/research/api-key-storage.md`](docs/research/api-key-storage.md)。§4 手测已通过。
 - **界面语言 zh/en：** Settings「偏好」切换；侧栏/右键/设置/Files/审批卡/搜索/工作区/模型选择等壳层文案走 `src/i18n`；Agent 仍跟用户提问语言；`zh`/`en` 词条对齐（416）。
 - **Files Word（.docx）：** mammoth/htmldocx 读写；预览 + HTML 源码编辑；调研报告 `docs/research/files-editor-office-scope.md`（Excel/PPT 暂缓）。
@@ -51,6 +53,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - LLM 错误提示分类：区分连接超时 / 地址不可达 / SSL 证书 / 401 / 403 / 404 / 429 / 500 / 502/503 / 模型不可用 / 响应超时 / 上下文超限
 
 ### Changed
+- **用户数据目录：** 没设 `APP_DATA_DIR` 时，会话和档案放到 `~/.local/share/loop-agent`，不再落到进程当前目录。开发在 `.env` 里写 `APP_DATA_DIR=./data` 仍用 `backend/data`。新目录不绑定工作区，也不自动搬旧数据。
 - **仓库杂物：** 清掉根目录临时脚本、重启报告、pytest 输出和已入库的 `__pycache__`。重启报告改写到 `logs/`。
 - **产品名：** 界面、关于页、文档和 CLI 从 Hal Agent / `hal` 改为 Loop Agent / `loop`。配置目录改为 `~/.config/loop-agent`，仍会读取旧的 `hal-agent`。浏览器里 `hal.recentModels` 和 `hal:files-auto-save` 会迁到 `loop.*`。Python 包名仍是 `agent_window`。
 - **模型服务文案：** 中文界面下，档案卡的「当前 / 设为当前 / 测试 / 删除」、说明和密钥占位改为中文。说明不再加句号。Temperature、Base URL、API Key、Model ID、厂商名和模型 id 仍保留英文。
@@ -156,6 +159,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - 路线图按宪章 **A0–A4** 再对齐（取代旧「死抱目标默认脊柱 / Foundation F 清单」主轴）
 
 ### Fixed
+- **桌面界面代理：** `scripts/preview-server.mjs` 把 `/api` 的查询串一并转到后端。选上级目录、打开子文件夹才会落到点中的路径。
 - **自我介绍：** 系统提示里的产品名只写 Loop Agent。纯介绍里引用「测试通过」不再被当成这一轮写过文件，不再追加未审批声明。真的声称写盘或测试通过、又没有审批记录时，声明仍会加上。
 - **侧栏时间：** 右边的数字改为距最近一次发送指令的时间。回复、改名、换模型不再把它往后推。无时区的 UTC 时间按 UTC 解析，避免东八区多出约 8 小时。还没发过指令的会话用创建时间。
 - **会话名：** 侧栏里手动改过的名字会记住，之后发消息不再改写。没改过名字的会话，仍只用第一条指令生成一次短标题。

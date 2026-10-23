@@ -23,6 +23,7 @@ __pycache__/
 .aw-sandbox/
 *-restart-report.txt
 _pytest_out.txt
+shell/loop-window
 
 # Editor
 .vscode/*

@@ -118,6 +118,18 @@ loop-ai              Model Registry、OpenAI 兼容 Client、流式、错误归�
 
 **物理包名** 可渐进：`agent_window` → `loop_*` 与抽层同步，避免单独「全文替换 PR」。
 
+### 1.4 运行时三个目录
+
+四层回答谁可以调用谁。运行时另有三个目录，不增加 import 层，环也不解析安装路径。
+
+| 目录 | 放什么 | 谁决定 |
+|------|--------|--------|
+| **安装目录** | 程序本身 | 以后的桌面壳。用户不把它当项目 |
+| **用户数据目录** | 会话库、模型档案、记忆、上次选中的工作区 | `Settings.app_data_dir`（窗口与 coding 已读这个值，coding 不 import `api`）。设了 `APP_DATA_DIR` 就用它；没设则 `~/.local/share/loop-agent`。不默认成进程当前目录，也不把 `backend/data` 自动拷进去 |
+| **工作区** | 用户选的文件夹 | loop-coding 沙箱。没绑定就没有根，工具读不到安装树 |
+
+命令行配置 `~/.config/loop-agent` 只服务 CLI，不和用户数据目录合并。开发进程在 `backend/.env` 写 `APP_DATA_DIR=./data`，继续用仓库里的狗粮数据。桌面入口是 `loop shell`：开窗拉起这份用户数据目录上的后端，关窗后停掉。还没有工作区时，窗口里的向导先收集模型和文件夹。这个进程不读开发用的 `backend/.env`。
+
 ---
 
 ## 2. Pi Agent 学习参考（M01–M10）

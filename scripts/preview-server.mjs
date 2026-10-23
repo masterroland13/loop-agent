@@ -70,9 +70,9 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const pathname = new URL(req.url, `http://${req.headers.host}`).pathname
-  if (pathname.startsWith('/api') || pathname === '/health') {
-    proxy(req, res, pathname)
+  const incoming = new URL(req.url, `http://${req.headers.host}`)
+  if (incoming.pathname.startsWith('/api') || incoming.pathname === '/health') {
+    proxy(req, res, incoming.pathname + incoming.search)
     return
   }
   serveStatic(req, res)

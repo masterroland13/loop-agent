@@ -54,6 +54,8 @@ from agent_window.schemas import (
     ToolsResponse,
     UpdateSessionRequest,
     WorkspaceBrowseResponse,
+    WorkspaceMkdirRequest,
+    WorkspaceMkdirResponse,
     WorkspaceFileCopyRequest,
     WorkspaceFileCopyResponse,
     WorkspaceFileDeleteResponse,
@@ -162,6 +164,7 @@ from agent_window.services.turn_trace import TurnTraceWriter, trace_for_response
 from agent_window.services.workspace import (
     WorkspaceError,
     browse_directory,
+    create_browse_directory,
     clear_workspace_root,
     get_workspace_root,
     copy_entry,
@@ -1177,6 +1180,15 @@ def set_workspace_endpoint(request: WorkspaceSetRequest, db: Session = Depends(g
 def clear_workspace_endpoint():
     clear_workspace_root()
     return WorkspaceStatusResponse(**workspace_status())
+
+
+@router.post("/api/workspace/mkdir", response_model=WorkspaceMkdirResponse)
+def mkdir_browse_endpoint(request: WorkspaceMkdirRequest):
+    try:
+        dest = create_browse_directory(request.parent, request.name)
+    except WorkspaceError as e:
+        raise HTTPException(status_code=400, detail={"code": e.code, "message": str(e)}) from e
+    return WorkspaceMkdirResponse(path=str(dest))
 
 
 @router.get("/api/workspace/browse", response_model=WorkspaceBrowseResponse)
