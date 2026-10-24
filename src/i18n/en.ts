@@ -230,6 +230,8 @@ export const en: MessageTree = {
     goal: 'Goal',
     multitask: 'Multitask',
     planIdea: 'Plan New Idea',
+    compact: 'Compact context',
+    contextUsage: 'Context ~{percent}%',
   },
   common: {
     copy: 'Copy',

@@ -218,6 +218,9 @@ def add_message(
     if update_leaf:
         session.leaf_id = message.id
     db.commit()
+    from agent_window.services.session_transcript import append_message_event
+
+    append_message_event(session, message)
     return message
 
 
@@ -241,6 +244,20 @@ def delete_session(db: Session, session: SessionModel) -> None:
 
 def get_message(db: Session, message_id: str) -> Optional[Message]:
     return db.query(Message).filter(Message.id == message_id).first()
+
+
+def update_message_parent(
+    db: Session,
+    message_id: str,
+    parent_id: str | None,
+) -> Optional[Message]:
+    message = get_message(db, message_id)
+    if message is None:
+        return None
+    message.parent_id = parent_id
+    db.commit()
+    db.refresh(message)
+    return message
 
 
 def delete_message(db: Session, message: Message) -> None:

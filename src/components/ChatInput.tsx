@@ -29,6 +29,8 @@ interface ChatInputProps {
   dimmed?: boolean
   /** Active pair highlight on the bar itself (no outer outline shell) */
   highlighted?: boolean
+  occupancyPercent?: number | null
+  onCompact?: () => void
 }
 
 const MAX_HEIGHT_BAR_PX = 160
@@ -183,6 +185,8 @@ export function ChatInput({
   enterToSend = true,
   dimmed = false,
   highlighted = false,
+  occupancyPercent = null,
+  onCompact,
 }: ChatInputProps) {
   const t = useT()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -321,6 +325,14 @@ export function ChatInput({
       onClick: onPlanIdea,
     })
   }
+  if (onCompact) {
+    moreItems.push({
+      id: 'compact',
+      label: t('chat.compact'),
+      disabled: disabled || isStreaming,
+      onClick: onCompact,
+    })
+  }
 
   /** Tall chrome → block radius (multi-line, Goal row, or attachments) */
   const barChromeExpanded =
@@ -351,6 +363,16 @@ export function ChatInput({
 
   const rightTools = (
     <div ref={rightToolsRef} className="flex h-8 shrink-0 items-center gap-1.5">
+      {occupancyPercent != null && occupancyPercent >= 0 && (
+        <span
+          title={t('chat.contextUsage', { percent: String(occupancyPercent) })}
+          className={`shrink-0 tabular-nums text-[12px] ${
+            occupancyPercent >= 85 ? 'text-[var(--warn,var(--text-muted))]' : 'text-[var(--text-dim)]'
+          }`}
+        >
+          {occupancyPercent}%
+        </span>
+      )}
       {onModelClick && (
         <button
           type="button"

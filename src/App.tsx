@@ -5,8 +5,10 @@ import {
   fetchModelProfiles,
   fetchRuntime,
   fetchWorkspace,
+  compactSession,
   getMessages,
   getSession,
+  getSessionContext,
   setApiErrorLocale,
   setWorkspace,
   toggleMessageFavorite,
@@ -103,6 +105,7 @@ function App() {
   const [activeSurface, setActiveSurface] = useState<SurfaceKind>('none')
   /** Once Files has been opened, keep it mounted (hidden) so tabs/dirty survive collapse. */
   const [filesMounted, setFilesMounted] = useState(false)
+  const [occupancyPercent, setOccupancyPercent] = useState<number | null>(null)
 
   const {
     sessions,
@@ -265,6 +268,38 @@ function App() {
     setToast(message)
     window.setTimeout(() => setToast(null), 2200)
   }, [])
+
+  const refreshOccupancy = useCallback(async (sessionId: string | null) => {
+    if (!sessionId) {
+      setOccupancyPercent(null)
+      return
+    }
+    try {
+      const usage = await getSessionContext(sessionId)
+      setOccupancyPercent(usage.percent)
+    } catch {
+      setOccupancyPercent(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshOccupancy(activeSessionId)
+  }, [activeSessionId, isStreaming, refreshOccupancy])
+
+  const handleCompact = useCallback(async () => {
+    if (!activeSessionId) return
+    try {
+      const result = await compactSession(activeSessionId)
+      setOccupancyPercent(result.percent_after)
+      showToast(
+        translate(settings.language, 'chat.contextUsage', {
+          percent: String(result.percent_after),
+        }),
+      )
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : translate(settings.language, 'app.copyFailed'))
+    }
+  }, [activeSessionId, settings.language, showToast])
 
   modelFallbackRef.current = (fallbackModel, profileId, sessionId) => {
     const sid = sessionId || activeSessionId
@@ -1019,6 +1054,8 @@ function App() {
       }),
     modelName,
     enterToSend: settings.enterToSend,
+    occupancyPercent,
+    onCompact: activeSessionId ? handleCompact : undefined,
   }
 
   const setupWizard = (

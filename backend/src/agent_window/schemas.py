@@ -80,6 +80,29 @@ class RegenerateRequest(BaseModel):
     model: str | None = Field(default=None, max_length=128)
 
 
+class CompactRequest(BaseModel):
+    focus: str | None = Field(default=None, max_length=240)
+
+
+class ContextUsageResponse(BaseModel):
+    tokens: int
+    context_limit: int
+    percent: int
+    message_count: int
+
+
+class CompactResponse(BaseModel):
+    compressed: bool
+    method: str
+    tokens_before: int
+    tokens_after: int
+    percent_before: int
+    percent_after: int
+    context_limit: int
+    older_count: int = 0
+    focus: str | None = None
+
+
 class SteerRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=100000)
 

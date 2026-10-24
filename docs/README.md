@@ -26,6 +26,7 @@
 ### plans/
 
 - [`session-model-profiles.md`](plans/session-model-profiles.md) — 会话级档案 + OpenAI 兼容预置（§4 手测已通过）
+- [`context-loop-strengthen.md`](plans/context-loop-strengthen.md) — 跨轮上下文 / Compaction 上树 / 检索（C0–C5 主路径）
 
 ### design/
 
@@ -43,7 +44,7 @@
 - [`files-editor-office-scope.md`](research/files-editor-office-scope.md) — Office 范围调研（Excel/PPT 暂缓；Word/Markdown 体感与 docx 技术路线）
 - [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距
 - [`api-key-storage.md`](research/api-key-storage.md) — API Key 存放、泄露面、网页/桌面与 Cursor·Cline 对照
-- [`compaction-handoff-peers.md`](research/compaction-handoff-peers.md) — Codex/Cursor/Claude/Pi 压缩对照与本仓 handoff 取舍
+- [`compaction-handoff-peers.md`](research/compaction-handoff-peers.md) — Codex/Cursor/Claude/Pi 压缩对照（2026-10-24 复审）+ 本仓 handoff 取舍
 - [`cursor-cot-activity-timeline.md`](research/cursor-cot-activity-timeline.md) — Cursor 式 CoT / Explored·Edited 调研与修订计划
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)

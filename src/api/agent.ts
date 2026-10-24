@@ -297,6 +297,42 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await apiFetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
 }
 
+export interface ContextUsage {
+  tokens: number
+  context_limit: number
+  percent: number
+  message_count: number
+}
+
+export interface CompactResult {
+  compressed: boolean
+  method: string
+  tokens_before: number
+  tokens_after: number
+  percent_before: number
+  percent_after: number
+  context_limit: number
+  older_count: number
+  focus?: string | null
+}
+
+export async function getSessionContext(sessionId: string): Promise<ContextUsage> {
+  const response = await apiFetch(`/api/sessions/${sessionId}/context`)
+  return response.json()
+}
+
+export async function compactSession(
+  sessionId: string,
+  focus?: string,
+): Promise<CompactResult> {
+  const response = await apiFetch(`/api/sessions/${sessionId}/compact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(focus ? { focus } : {}),
+  })
+  return response.json()
+}
+
 export async function getMessages(
   sessionId: string,
   opts?: { view?: 'all' | 'active' },

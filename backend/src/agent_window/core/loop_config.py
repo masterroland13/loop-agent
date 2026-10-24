@@ -44,6 +44,7 @@ class LoopConfig:
 
     # Charter §3.1 — convert_to_llm required-with-default (A4)
     convert_to_llm: Optional[Hook] = None
+    # Default installed by services.context_transform (compress + Goal pin).
     transform_context: Optional[AsyncHook] = None
     before_tool_call: Optional[AsyncHook] = None
     after_tool_call: Optional[AsyncHook] = None

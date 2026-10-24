@@ -7,9 +7,9 @@
 
 | 字段 | 值 |
 |------|-----|
-| **最后更新** | 2026-10-23 |
+| **最后更新** | 2026-10-24 |
 | **产品名** | Loop Agent |
-| **当前焦点** | 安装窗口首次向导与对话已手测通过；WebKitGTK 2.38 安装页可开窗 |
+| **当前焦点** | 跨轮上下文加固 C0–C5 已落地；可选 C6 中途压 |
 | **架构阶段** | **A0–A4 完成** |
 
 ---
@@ -29,6 +29,19 @@
 
 | 日期 | 变更摘要 |
 |------|----------|
+| 2026-10-24 | **C5 审查补洞：** 手动压必须上树成功才 200；Goal 可钉 |
+| 2026-10-24 | **C4 审查补洞：** 摘录字段、禁 SQLite 后备、会话根禁逃 |
+| 2026-10-24 | **C3 审查补洞：** 环内压按树重算切点上树 |
+| 2026-10-24 | **C2 审查补洞：** 近→远前缀截断；persist 共用压缩帽 |
+| 2026-10-24 | **C1 审查补洞：** persist 失败回滚；不对齐不猜切点 |
+| 2026-10-24 | **C0 审查补洞：** 中断轮次、YOLO gate、路径禁逃、坏行跳过 |
+| 2026-10-24 | **C5 手动 compact + 占用条：** `POST .../compact` + `GET .../context`；输入区百分比。默认 auto_compress 仍关 |
+| 2026-10-24 | **C4 检索已折原文：** `search_session` 只搜本会话 JSONL + spill 短摘录。下一刀 C5 |
+| 2026-10-24 | **C3 transform_context：** 发送与环内 LLM 前同一钩子；超限再压并上树。下一刀 C4 |
+| 2026-10-24 | **C2 保留 user 原话：** 被折 user 近→远进压缩列表（8K 帽）；persist 挂到摘要后。下一刀 C3 |
+| 2026-10-24 | **C1 Compaction 上树：** 摘要写 `compaction_summary`，parent 接被折区间之前，近端 relink；原文留库/JSONL。下一刀 C2 |
+| 2026-10-24 | **C0 会话全文落盘：** `transcript.jsonl` 在 session.data_path，只追加；密钥打码。下一刀 C1 上树 |
+| 2026-10-24 | **上下文调研复审：** Codex 本地 4 条 handoff + 保留 user；Cursor JSONL/中途压；Claude `/compact`+focus。方案 C0–C5，不改六节、不上加密 compact |
 | 2026-10-23 | **安装窗口手测：** 向导、模型、回复在 `loop shell` 里通过。打包页 fetch+eval；向导单独一页；窗口走 X11 |
 | 2026-10-23 | **卸载：** `loop uninstall` 删除安装目录、命令行入口和桌面启动项，留下用户数据和工作区 |
 | 2026-10-23 | **桌面启动项：** `loop install` 写入 `~/.local/share/applications/loop-agent.desktop`，Exec 是 `loop shell` 的绝对路径 |
@@ -238,7 +251,8 @@
 | P1 | **多会话后台续跑** | 产品（**P1–P3 已落地**）：切会话不 cancel；P2 保活 SSE + `liveStreamsRef`；侧栏标题 `.text-shimmer`；完成后未读。**P3**：pending patch/shell/memory 带 `session_id`；`cancel_turn` / `list_*?session_id=` 按会话隔离（Stop A 不撤 B 的门）。 |
 | P2 | Steering UI（已撤回，勿再开） | — |
 | P2 | Gate 深拆（await → before_tool_call） | Step1–3 ✅ |
-| P2 | Mem MEMORY.md / Provider | M0+M1 ✅（对齐 Hermes：精确去重，无近义消解）；Provider / session_search / 后台 review **后置** |
+| P2 | Mem MEMORY.md / Provider | M0+M1 ✅（对齐 Hermes：精确去重，无近义消解）；外部 Provider / 后台 review **后置** |
+| P1 | **跨轮上下文加固** | C0–C5 ✅。可选 C6。方案 [`plans/context-loop-strengthen.md`](plans/context-loop-strengthen.md) |
 | — | MCP / 网页 / PDF / Project OS | 暂缓 |
 
 ---

@@ -27,6 +27,7 @@ from agent_window.core.tool_hooks import exploration_note_after_tool, observe_fo
 from agent_window.core.steering import drain_steering, format_steering_content
 from agent_window.core.turn import AgentLoopState, TurnOutcome
 from agent_window.services.agent_settings import load_agent_settings
+from agent_window.services.context_transform import apply_transform_context
 from agent_window.services.provider import provider
 from agent_window.services.session_turns import TurnCancelled, race_with_cancel
 from agent_window.tools.registry import registry
@@ -317,6 +318,10 @@ async def _run_one_turn(
         return exploration_note_after_tool(config, state, tool_name)
 
     try:
+        working, _compressed, _meta = await apply_transform_context(
+            config, working, preserve_goal=turn_goal
+        )
+        state.working = working
         turn = await race_with_cancel(
             provider.chat_complete(working, tools=tools or None, model=model),
             cancel_event,

@@ -20,6 +20,8 @@ SummarizeFn = Callable[[str], Awaitable[str]]
 # Leave headroom under the hard context limit before triggering compress.
 DEFAULT_TOKEN_RESERVE = 1024
 DEFAULT_KEEP_RECENT_TOKENS = 2048
+# Folded-span user originals kept after the summary (near → far, token cap).
+DEFAULT_KEEP_FOLDED_USER_TOKENS = 8192
 
 SIX_SECTIONS = (
     "Goal",
@@ -119,6 +121,11 @@ class CompressMeta:
     summary_preview: str = ""
     older_count: int = 0
     used_previous_summary: bool = False
+    cut_index: int = 0
+    rest_count: int = 0
+    summary_content: str = ""
+    kept_folded_user_count: int = 0
+    keep_folded_user_tokens: int = DEFAULT_KEEP_FOLDED_USER_TOKENS
 
 
 def approx_tokens(text: str) -> int:
@@ -205,7 +212,25 @@ def find_cut_index(
     return candidate
 
 
-def _plain_content(msg: Dict[str, Any]) -> str:
+def _msg_role(msg: Any) -> str:
+    role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+    if hasattr(role, "value"):
+        return str(role.value)
+    return str(role or "")
+
+
+def _msg_as_dict(msg: Any) -> Dict[str, Any]:
+    if isinstance(msg, dict):
+        return msg
+    return {
+        "role": _msg_role(msg),
+        "content": getattr(msg, "content", None) or "",
+        "entry_type": getattr(msg, "entry_type", None) or "message",
+    }
+
+
+def _plain_content(msg: Any) -> str:
+    msg = _msg_as_dict(msg) if not isinstance(msg, dict) else msg
     content = msg.get("content")
     if isinstance(content, str):
         return content.strip()
@@ -220,9 +245,50 @@ def _plain_content(msg: Dict[str, Any]) -> str:
     return ""
 
 
-def _is_compaction_message(msg: Dict[str, Any]) -> bool:
-    text = _plain_content(msg)
-    return COMPACTION_SUMMARY_MARKER in text or msg.get("entry_type") == "compaction_summary"
+def _is_compaction_message(msg: Any) -> bool:
+    as_dict = _msg_as_dict(msg)
+    text = _plain_content(as_dict)
+    return COMPACTION_SUMMARY_MARKER in text or as_dict.get("entry_type") == "compaction_summary"
+
+
+def select_folded_user_originals(
+    older: List[Any],
+    *,
+    token_budget: int = DEFAULT_KEEP_FOLDED_USER_TOKENS,
+) -> List[Any]:
+    """User originals from the folded span, nearest first, then farther if they fit.
+
+    Always keeps the nearest real user when one exists. Skips compaction
+    summaries, empty users, assistants, and tool rows.
+    """
+    candidates: List[Any] = []
+    for msg in older:
+        if _msg_role(msg) != "user":
+            continue
+        if _is_compaction_message(msg):
+            continue
+        if not _plain_content(msg):
+            continue
+        candidates.append(msg)
+    if not candidates:
+        return []
+
+    selected: List[Any] = []
+    used = 0
+    budget = max(0, int(token_budget))
+    for msg in reversed(candidates):
+        cost = approx_messages_tokens([_msg_as_dict(msg)])
+        if not selected:
+            selected.append(msg)
+            used += cost
+            continue
+        if used + cost > budget:
+            # Near → far prefix: once an older user overflows, drop the rest.
+            break
+        selected.append(msg)
+        used += cost
+    selected.reverse()
+    return selected
 
 
 def find_previous_summary(messages: List[Dict[str, Any]]) -> Optional[str]:
@@ -463,10 +529,27 @@ def _user_request_mostly_covered(
     return any(any(c in a for c in done_cues) for a in assistants[-3:])
 
 
+def _focus_terms(focus: Optional[str]) -> List[str]:
+    skip = {"只保留", "保留", "keep", "only", "focus"}
+    return [
+        part
+        for part in (focus or "").replace("：", " ").replace(":", " ").split()
+        if part.strip() and part.lower() not in skip
+    ]
+
+
+def _text_hits_focus(text: str, terms: List[str]) -> bool:
+    if not terms or not text:
+        return False
+    lower = text.lower()
+    return any(term.lower() in lower for term in terms)
+
+
 def build_extractive_summary(
     older: List[Dict[str, Any]],
     *,
     goal_text: Optional[str] = None,
+    focus: Optional[str] = None,
 ) -> str:
     """Deterministic 6-section fallback — paths + tool progress, never placeholder-only."""
     users: List[str] = []
@@ -555,6 +638,17 @@ def build_extractive_summary(
     if not critical_paths:
         critical_paths = paths
 
+    focus_terms = _focus_terms(focus)
+    if focus_terms:
+        focused_users = [u for u in users if _text_hits_focus(u, focus_terms)]
+        focused_paths = [p for p in critical_paths if _text_hits_focus(p, focus_terms)]
+        if focused_paths:
+            critical_paths = focused_paths + [p for p in critical_paths if p not in focused_paths]
+        if focused_users:
+            next_steps = [f"优先保留：{focus_terms[0]}"] + [
+                _clip_line(u, 100) for u in focused_users[-2:]
+            ] + next_steps
+
     if critical_paths:
         critical = [f"- {p}" for p in critical_paths[:20]]
     else:
@@ -562,6 +656,8 @@ def build_extractive_summary(
         crumbs = tool_lines[-2:]
         for c in crumbs:
             critical.append(f"- {_clip_line(c, 140)}")
+        if focus_terms:
+            critical.insert(0, f"- focus: {', '.join(focus_terms)}")
 
     return "\n".join(
         [
@@ -718,8 +814,15 @@ def _build_summarize_input(
     *,
     goal_text: Optional[str],
     previous_summary: Optional[str],
+    focus: Optional[str] = None,
 ) -> str:
     parts = [_SIX_SECTION_PROMPT]
+    focus_text = (focus or "").strip()
+    if focus_text:
+        parts.append(
+            f"【Focus】用户要求优先保留：{focus_text}。"
+            "Critical Context 与 Next Steps 必须偏向这些词及相关路径，其它细节从简。"
+        )
     if goal_text:
         from agent_window.agent.goal import clip_goal
 
@@ -748,6 +851,9 @@ async def compress_messages_if_needed(
     preserve_goal: Optional[str] = None,
     reserve_tokens: int = DEFAULT_TOKEN_RESERVE,
     keep_recent_tokens: int = DEFAULT_KEEP_RECENT_TOKENS,
+    keep_folded_user_tokens: int = DEFAULT_KEEP_FOLDED_USER_TOKENS,
+    force: bool = False,
+    focus: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], bool, CompressMeta]:
     """
     If over (context_limit - reserve) and auto_compress, fold older turns into
@@ -760,18 +866,24 @@ async def compress_messages_if_needed(
     Returns (messages, compressed_flag, meta).
     """
     empty_meta = CompressMeta()
-    if not auto_compress:
+    if not auto_compress and not force:
         return messages, False, empty_meta
 
     threshold = max(1, int(context_limit) - max(0, int(reserve_tokens)))
     tokens = approx_messages_tokens(messages)
-    if tokens <= threshold:
+    if tokens <= threshold and not force:
         return messages, False, empty_meta
 
     other_system, _existing_goal_blocks, rest = _split_system_messages(messages)
     goal_text = (preserve_goal or "").strip() or None
 
     cut = find_cut_index(rest, keep_recent_tokens=keep_recent_tokens)
+    if force and cut <= 0 and len(rest) > 2:
+        cut = max(1, len(rest) - 2)
+        for j in range(cut, len(rest)):
+            if rest[j].get("role") in ("user", "assistant"):
+                cut = j
+                break
     if cut <= 0:
         if len(rest) <= 4:
             keep = rest[-4:]
@@ -780,7 +892,11 @@ async def compress_messages_if_needed(
                 from agent_window.agent.goal import inject_goal_into_messages
 
                 out = inject_goal_into_messages(out, goal_text)
-            return out, True, CompressMeta(method="tail_trim", older_count=max(0, len(rest) - len(keep)))
+            return out, True, CompressMeta(
+                method="tail_trim",
+                older_count=max(0, len(rest) - len(keep)),
+                rest_count=len(rest),
+            )
         # Over keep budget but find_cut stayed at 0 — leave a small recent tail
         cut = max(1, len(rest) - 4)
         for j in range(cut, len(rest)):
@@ -796,11 +912,11 @@ async def compress_messages_if_needed(
             from agent_window.agent.goal import inject_goal_into_messages
 
             out = inject_goal_into_messages(out, goal_text)
-        return out, True, CompressMeta(method="tail_trim", older_count=0)
+        return out, True, CompressMeta(method="tail_trim", older_count=0, rest_count=len(rest))
 
     previous_summary = find_previous_summary(older)
     blob = serialize_messages_for_summary(older)
-    extractive = build_extractive_summary(older, goal_text=goal_text)
+    extractive = build_extractive_summary(older, goal_text=goal_text, focus=focus)
 
     summary_text = ""
     method = "extractive"
@@ -810,6 +926,7 @@ async def compress_messages_if_needed(
                 blob,
                 goal_text=goal_text,
                 previous_summary=previous_summary,
+                focus=focus,
             )
             llm_raw = (await summarize(summarize_input)).strip()
             if llm_raw:
@@ -823,7 +940,14 @@ async def compress_messages_if_needed(
         method = "extractive"
 
     summary_msg = _summary_message(summary_text, preserve_goal=goal_text)
-    out = other_system + [summary_msg] + recent
+    kept_users = [
+        _msg_as_dict(m)
+        for m in select_folded_user_originals(
+            older,
+            token_budget=keep_folded_user_tokens,
+        )
+    ]
+    out = other_system + [summary_msg] + kept_users + recent
     if goal_text:
         from agent_window.agent.goal import inject_goal_into_messages
 
@@ -834,6 +958,11 @@ async def compress_messages_if_needed(
         summary_preview=_preview(summary_text),
         older_count=len(older),
         used_previous_summary=bool(previous_summary),
+        cut_index=cut,
+        rest_count=len(rest),
+        summary_content=str(summary_msg.get("content") or ""),
+        kept_folded_user_count=len(kept_users),
+        keep_folded_user_tokens=int(keep_folded_user_tokens),
     )
     logger.info(
         "context compressed method=%s older=%s preview=%s",

@@ -13,6 +13,7 @@ from agent_window.services.compress import (
     find_cut_index,
     find_previous_summary,
     messages_contain_goal,
+    select_folded_user_originals,
 )
 
 
@@ -126,6 +127,10 @@ def test_compress_without_goal_still_works() -> None:
     out, compressed, meta = asyncio.run(_run())
     assert compressed
     assert meta.method == "extractive"
+    assert meta.cut_index > 0
+    assert meta.rest_count > meta.cut_index
+    assert "【对话压缩摘要】" in meta.summary_content
+    assert meta.summary_content != ""
     assert not any(
         isinstance(m.get("content"), str) and str(m["content"]).startswith(GOAL_MARKER)
         for m in out
@@ -652,3 +657,100 @@ def test_compress_rejects_placeholder_llm_output() -> None:
     assert "（见原文）" not in body
     assert "ImportError" in body or "排查" in body
     assert meta.method == "llm"  # LLM ran; coerce repaired body
+
+
+def test_select_folded_users_near_first_drops_far_over_cap() -> None:
+    older = [
+        {"role": "user", "content": "FAR_USER_ORIGINAL " + ("远" * 400)},
+        {"role": "assistant", "content": "ASSISTANT_SHOULD_NOT_RETURN " + ("助" * 800)},
+        {"role": "tool", "name": "grep", "content": "TOOL_SHOULD_NOT_RETURN found loop.py"},
+        {"role": "user", "content": "NEAR_USER_ORIGINAL 请修 ImportError"},
+    ]
+    kept = select_folded_user_originals(older, token_budget=40)
+    texts = [str(m.get("content") or "") for m in kept]
+    assert any("NEAR_USER_ORIGINAL" in t for t in texts)
+    assert not any("FAR_USER_ORIGINAL" in t for t in texts)
+    assert not any("ASSISTANT_SHOULD_NOT_RETURN" in t for t in texts)
+    assert not any("TOOL_SHOULD_NOT_RETURN" in t for t in texts)
+    assert all(m.get("role") == "user" for m in kept)
+    assert not any(m.get("role") == "assistant" for m in kept)
+    assert not any(m.get("role") == "tool" for m in kept)
+
+    roomy = select_folded_user_originals(older, token_budget=800)
+    roomy_texts = [str(m.get("content") or "") for m in roomy]
+    assert "FAR_USER_ORIGINAL" in roomy_texts[0]
+    assert "NEAR_USER_ORIGINAL" in roomy_texts[-1]
+    assert roomy_texts.index(roomy_texts[0]) < roomy_texts.index(roomy_texts[-1])
+
+
+def test_select_folded_users_stops_at_first_overflow() -> None:
+    older = [
+        {"role": "user", "content": "FAR_SMALL x"},
+        {"role": "user", "content": "MID_HUGE " + ("中" * 400)},
+        {"role": "user", "content": "NEAR_SMALL 请修"},
+    ]
+    kept = select_folded_user_originals(older, token_budget=40)
+    texts = [str(m.get("content") or "") for m in kept]
+    assert any("NEAR_SMALL" in t for t in texts)
+    assert not any("FAR_SMALL" in t for t in texts)
+    assert not any("MID_HUGE" in t for t in texts)
+    assert all(m.get("role") == "user" for m in kept)
+
+
+def test_compress_keeps_folded_user_as_user_role() -> None:
+    goal = "修好 ImportError"
+    messages = [
+        {"role": "system", "content": "你是编码助手。"},
+        {"role": "user", "content": "FAR_USER_ORIGINAL 很早的请求 " + ("远" * 120)},
+        {"role": "assistant", "content": "ASSISTANT_SHOULD_NOT_RETURN " + ("助" * 200)},
+        {"role": "tool", "name": "grep", "content": "TOOL_SHOULD_NOT_RETURN src/foo.py"},
+        {"role": "user", "content": "NEAR_USER_ORIGINAL 请修 ImportError: No module named agent_window"},
+        {"role": "assistant", "content": "中间回复 " + ("中" * 200)},
+        {"role": "user", "content": "RECENT_USER 继续"},
+        {"role": "assistant", "content": "RECENT_ASST 好"},
+    ]
+
+    async def _run():
+        return await compress_messages_if_needed(
+            messages,
+            auto_compress=True,
+            context_limit=200,
+            reserve_tokens=0,
+            keep_recent_tokens=20,
+            preserve_goal=goal,
+        )
+
+    out, compressed, meta = asyncio.run(_run())
+    assert compressed
+    assert meta.kept_folded_user_count >= 1
+    users = [m for m in out if m.get("role") == "user" and m.get("entry_type") != "compaction_summary"]
+    user_blob = "\n".join(str(m.get("content") or "") for m in users)
+    assert "NEAR_USER_ORIGINAL" in user_blob
+    assert not any("ASSISTANT_SHOULD_NOT_RETURN" in str(m.get("content") or "") for m in users)
+    assert not any("TOOL_SHOULD_NOT_RETURN" in str(m.get("content") or "") for m in users)
+    assert not any(m.get("role") == "assistant" and "ASSISTANT_SHOULD_NOT_RETURN" in str(m.get("content") or "") for m in out)
+    assert not any(m.get("role") == "tool" for m in out)
+    goal_blocks = [
+        m
+        for m in out
+        if m.get("role") == "system"
+        and isinstance(m.get("content"), str)
+        and str(m["content"]).startswith(GOAL_MARKER)
+    ]
+    assert goal_blocks
+    assert "NEAR_USER_ORIGINAL" not in goal_blocks[0]["content"] or "NEAR_USER_ORIGINAL" in user_blob
+
+
+def test_compress_meta_followup_still_skipped_in_next_steps() -> None:
+    older = [
+        {"role": "user", "content": "只读读 README.md，不要改文件，写 150 字短总结"},
+        {"role": "tool", "name": "read_file", "content": "README.md ok"},
+        {"role": "user", "content": "把本会话压缩摘要按六节原样贴出来（不要改写）。"},
+    ]
+    text = build_extractive_summary(older, goal_text="只读调查")
+    next_body = text.split("## Next Steps", 1)[1].split("##", 1)[0]
+    assert "原样贴出" not in next_body
+    assert "六节" not in next_body
+    kept = select_folded_user_originals(older, token_budget=8000)
+    assert any("按六节原样贴出来" in str(m.get("content") or "") for m in kept)
+    assert all(m.get("role") == "user" for m in kept)

@@ -52,6 +52,15 @@ def _fallback_leaf_id(session) -> str | None:
     return latest.id
 
 
+def persistable_path_messages(path: Sequence[Any]) -> list:
+    """Rows that become LLM rest items (empty placeholder assistants are skipped)."""
+    out: list = []
+    for m in path:
+        if str(getattr(m, "content", None) or "").strip():
+            out.append(m)
+    return out
+
+
 def build_path_from_session(session, leaf_id: str | None = None) -> list:
     """Active path root→leaf. Uses session.leaf_id when leaf_id is None; max sequence fallback."""
     by_id = _messages_by_id(session)

@@ -85,6 +85,9 @@ class TurnTraceWriter:
             )
             self._commit_trace()
 
+        from agent_window.services.session_transcript import append_sse_event
+
+        append_sse_event(self.session, event)
         return mapped
 
     def _commit_trace(self) -> None:
@@ -110,6 +113,9 @@ class TurnTraceWriter:
         self.db.add(self.session)
         self.db.commit()
         self.db.refresh(self.assistant)
+        from agent_window.services.session_transcript import append_message_event
+
+        append_message_event(self.session, self.assistant)
         return self.assistant
 
     def finalize_interrupted(self, *, code: str, message: str) -> Message:
@@ -139,6 +145,9 @@ class TurnTraceWriter:
         self.db.add(self.session)
         self.db.commit()
         self.db.refresh(self.assistant)
+        from agent_window.services.session_transcript import append_message_event
+
+        append_message_event(self.session, self.assistant)
         return self.assistant
 
     def delete_placeholder(self) -> None:

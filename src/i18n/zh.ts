@@ -229,6 +229,8 @@ export const zh: MessageTree = {
     goal: 'Goal',
     multitask: '多任务',
     planIdea: '规划新想法',
+    compact: '压缩上下文',
+    contextUsage: '上下文约 {percent}%',
   },
   common: {
     copy: '复制',

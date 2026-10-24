@@ -37,6 +37,9 @@ from agent_window.schemas import (
     MemoryContentResponse,
     MemoryContentUpdateRequest,
     MemoryProposalResponse,
+    CompactRequest,
+    CompactResponse,
+    ContextUsageResponse,
     MessageRequest,
     MessageResponse,
     ModelsResponse,
@@ -108,7 +111,10 @@ from agent_window.services.audit import (
 from agent_window.services.compress import (
     approx_messages_tokens,
     approx_tokens,
-    compress_messages_if_needed,
+)
+from agent_window.services.context_transform import (
+    apply_transform_context,
+    install_context_transform,
 )
 from agent_window.services.memory import (
     MEMORY_GUIDANCE,
@@ -250,6 +256,66 @@ def _resolve_turn_goal_for_session(
     return resolution.turn_goal, resolution.previous_goal, resolution.changed
 
 
+def _bind_turn_transform(
+    *,
+    db: Session,
+    session,
+    prior_path: list,
+    new_user,
+    agent_cfg: dict,
+    summarize,
+    session_id: str,
+    turn_goal: str | None,
+    loop_cfg,
+):
+    """Install transform_context and persist/audit whenever compress succeeds."""
+
+    def _on_compressed(_out, meta) -> None:
+        _audit(
+            "context.compress",
+            {
+                "session_id": session_id,
+                "goal_preserved": bool(turn_goal),
+                "method": meta.method,
+                "older_count": meta.older_count,
+                "used_previous_summary": meta.used_previous_summary,
+                "preview": meta.summary_preview,
+            },
+            session_id=session_id,
+        )
+        from agent_window.services.session_transcript import append_compact_event
+        from agent_window.services.compaction_persist import (
+            persist_compaction_from_tree,
+            persist_compaction_on_tree,
+        )
+
+        row = persist_compaction_on_tree(
+            db,
+            session,
+            prior_path=prior_path,
+            new_user=new_user,
+            meta=meta,
+        )
+        if row is None:
+            # Working lists (mid-loop tools) do not match the tree; cut on the tree.
+            row = persist_compaction_from_tree(db, session, meta)
+        if row is not None:
+            append_compact_event(
+                session,
+                method=meta.method,
+                older_count=meta.older_count,
+                preview=meta.summary_preview,
+            )
+
+    return install_context_transform(
+        loop_cfg,
+        auto_compress=agent_cfg["auto_compress"],
+        context_limit=agent_cfg["context_limit"],
+        summarize=summarize,
+        on_compressed=_on_compressed,
+    )
+
+
 async def _agent_turn_event_stream(
     *,
     session_id: str,
@@ -273,6 +339,7 @@ async def _agent_turn_event_stream(
     compress_preview: str | None = None,
     model_fallback: bool = False,
     fallback_profile_id: str | None = None,
+    loop_cfg=None,
 ):
     """Yield SSE lines for one agent turn; persist F6 trace on placeholder assistant."""
     if not session_db:
@@ -303,13 +370,17 @@ async def _agent_turn_event_stream(
     )
 
     assistant_content_parts: List[str] = []
-    loop_cfg = with_observe_spill(
-        LoopConfig.from_settings(
+    if loop_cfg is None:
+        loop_cfg = LoopConfig.from_settings(
             goal_mode=bool(getattr(session_db, "goal_mode", False)),
             preset=agent_cfg.get("loop_preset") or "yolo",
-        ),
-        writer.spill,
-    )
+        )
+        loop_cfg = install_context_transform(
+            loop_cfg,
+            auto_compress=agent_cfg.get("auto_compress"),
+            context_limit=agent_cfg.get("context_limit"),
+        )
+    loop_cfg = with_observe_spill(loop_cfg, writer.spill)
 
     async def _agent_events():
         with use_attachment_session(session_id):
@@ -614,6 +685,9 @@ def _system_prompt(session_id: str | None = None) -> str:
             "行内反引号只用于真正需要区分的路径、符号名或短代码片段；"
             "不要给普通英文词、布尔字面量（True/False）、或正文里每个文件名都加反引号。 "
             f"You have tools available: {tool_names}. "
+            "If a compaction summary omitted a path, quote, or tool detail, "
+            "call search_session(query=...) to pull a short excerpt from this "
+            "session's transcript; do not guess and do not dump the whole log. "
             f"{workspace_hint} "
             "If the user message includes an [附件] block: for text files call "
             "read_attachment(attachment_id=...) (not workspace read_file); "
@@ -1660,6 +1734,149 @@ def get_messages_endpoint(
     return [_message_to_response(m) for m in existing_messages]
 
 
+def _session_context_usage(session, *, agent_cfg: dict | None = None) -> ContextUsageResponse:
+    from agent_window.core.session_tree import persistable_path_messages
+
+    cfg = agent_cfg or load_agent_settings()
+    limit = max(1, int(cfg.get("context_limit") or 8192))
+    path = build_path_from_session(session)
+    loop_cfg = LoopConfig.from_settings(
+        goal_mode=bool(getattr(session, "goal_mode", False)),
+        preset=cfg.get("loop_preset") or "yolo",
+    )
+    chat = build_llm_messages(path, convert_to_llm=loop_cfg.convert_to_llm)
+    tokens = approx_messages_tokens(chat)
+    percent = min(999, int(round(100 * tokens / limit)))
+    return ContextUsageResponse(
+        tokens=tokens,
+        context_limit=limit,
+        percent=percent,
+        message_count=len(persistable_path_messages(path)),
+    )
+
+
+@router.get("/api/sessions/{session_id}/context", response_model=ContextUsageResponse)
+def get_session_context_endpoint(session_id: str, db: Session = Depends(get_db)):
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _session_context_usage(session)
+
+
+@router.post("/api/sessions/{session_id}/compact", response_model=CompactResponse)
+async def compact_session_endpoint(
+    session_id: str,
+    request: CompactRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Force a C1+C2 compaction onto the session tree. Does not touch the workspace."""
+    from agent_window.core.goal_hooks import resolve_session_goal
+    from agent_window.core.session_tree import persistable_path_messages
+    from agent_window.services.compaction_persist import (
+        persist_compaction_from_tree,
+        persist_compaction_on_tree,
+    )
+    from agent_window.services.compress import compress_messages_if_needed
+    from agent_window.services.session_transcript import append_compact_event
+
+    session = get_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    payload = request or CompactRequest()
+    focus = (payload.focus or "").strip() or None
+    path = build_path_from_session(session)
+    persistable = persistable_path_messages(path)
+    if len(persistable) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "EMPTY_SESSION", "message": "会话没有可压缩的历史"},
+        )
+
+    agent_cfg = load_agent_settings()
+    before = _session_context_usage(session, agent_cfg=agent_cfg)
+    loop_cfg = LoopConfig.from_settings(
+        goal_mode=bool(getattr(session, "goal_mode", False)),
+        preset=agent_cfg.get("loop_preset") or "yolo",
+    )
+    chat_messages = build_llm_messages(path, convert_to_llm=loop_cfg.convert_to_llm)
+    goal_res = resolve_session_goal(
+        goal_mode=bool(getattr(session, "goal_mode", False)),
+        user_text="",
+        history_messages=path,
+        pinned_goal=getattr(session, "pinned_goal", None),
+        audit_source="compact",
+    )
+    turn_goal = goal_res.turn_goal
+
+    _turn_profile = getattr(session, "profile_id", None)
+
+    async def _summarize_bound(blob: str) -> str:
+        return await _summarize_blob(blob, _turn_profile)
+
+    chat_messages, compressed, meta = await compress_messages_if_needed(
+        chat_messages,
+        auto_compress=True,
+        context_limit=agent_cfg["context_limit"],
+        summarize=_summarize_bound,
+        preserve_goal=turn_goal,
+        force=True,
+        focus=focus,
+    )
+    if not compressed or meta.method not in ("llm", "extractive"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "NOTHING_TO_COMPACT", "message": "当前路径没有可折叠的区间"},
+        )
+
+    row = persist_compaction_on_tree(
+        db,
+        session,
+        prior_path=path,
+        new_user=None,
+        meta=meta,
+        strict_align=True,
+    )
+    if row is None:
+        row = persist_compaction_from_tree(db, session, meta)
+    if row is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "COMPACT_NOT_PERSISTED", "message": "压缩成功但没有写到会话树上"},
+        )
+    _audit(
+        "context.compress",
+        {
+            "session_id": session_id,
+            "manual": True,
+            "focus": focus,
+            "method": meta.method,
+            "older_count": meta.older_count,
+            "preview": meta.summary_preview,
+        },
+        session_id=session_id,
+    )
+    append_compact_event(
+        session,
+        method=meta.method,
+        older_count=meta.older_count,
+        preview=meta.summary_preview,
+    )
+    db.refresh(session)
+    after = _session_context_usage(session, agent_cfg=agent_cfg)
+    return CompactResponse(
+        compressed=True,
+        method=meta.method,
+        tokens_before=before.tokens,
+        tokens_after=after.tokens,
+        percent_before=before.percent,
+        percent_after=after.percent,
+        context_limit=before.context_limit,
+        older_count=meta.older_count,
+        focus=focus,
+    )
+
+
 
 
 @router.post("/api/sessions/{session_id}/attachments", response_model=AttachmentResponse)
@@ -1839,27 +2056,22 @@ async def send_message_endpoint(
             audit_source="extract",
             session_id=session_id,
         )
-
-        chat_messages, compressed, compress_meta = await compress_messages_if_needed(
-            chat_messages,
-            auto_compress=agent_cfg["auto_compress"],
-            context_limit=agent_cfg["context_limit"],
+        loop_cfg = _bind_turn_transform(
+            db=db,
+            session=session,
+            prior_path=prior_path,
+            new_user=user_message,
+            agent_cfg=agent_cfg,
             summarize=_summarize_for_turn,
+            session_id=session_id,
+            turn_goal=turn_goal,
+            loop_cfg=loop_cfg,
+        )
+        chat_messages, compressed, compress_meta = await apply_transform_context(
+            loop_cfg,
+            chat_messages,
             preserve_goal=turn_goal,
         )
-        if compressed:
-            _audit(
-                "context.compress",
-                {
-                    "session_id": session_id,
-                    "goal_preserved": bool(turn_goal),
-                    "method": compress_meta.method,
-                    "older_count": compress_meta.older_count,
-                    "used_previous_summary": compress_meta.used_previous_summary,
-                    "preview": compress_meta.summary_preview,
-                },
-                session_id=session_id,
-            )
 
         prompt_tokens = approx_messages_tokens(chat_messages)
         started = time.time()
@@ -1893,6 +2105,7 @@ async def send_message_endpoint(
                         compress_preview=compress_meta.summary_preview if compressed else None,
                         model_fallback=model_fallback,
                         fallback_profile_id=_turn_profile or None,
+                        loop_cfg=loop_cfg,
                     ):
                         yield line
                 finally:
@@ -2010,27 +2223,22 @@ async def regenerate_endpoint(
             audit_source="regenerate",
             session_id=session_id,
         )
-
-        chat_messages, compressed, compress_meta = await compress_messages_if_needed(
-            chat_messages,
-            auto_compress=agent_cfg["auto_compress"],
-            context_limit=agent_cfg["context_limit"],
+        loop_cfg = _bind_turn_transform(
+            db=db,
+            session=session,
+            prior_path=history,
+            new_user=user_message,
+            agent_cfg=agent_cfg,
             summarize=_summarize_for_turn,
+            session_id=session_id,
+            turn_goal=turn_goal,
+            loop_cfg=loop_cfg,
+        )
+        chat_messages, compressed, compress_meta = await apply_transform_context(
+            loop_cfg,
+            chat_messages,
             preserve_goal=turn_goal,
         )
-        if compressed:
-            _audit(
-                "context.compress",
-                {
-                    "session_id": session_id,
-                    "goal_preserved": bool(turn_goal),
-                    "method": compress_meta.method,
-                    "older_count": compress_meta.older_count,
-                    "used_previous_summary": compress_meta.used_previous_summary,
-                    "preview": compress_meta.summary_preview,
-                },
-                session_id=session_id,
-            )
 
         prompt_tokens = approx_messages_tokens(chat_messages)
         all_msgs = sorted(session.messages, key=lambda m: m.sequence)
@@ -2076,6 +2284,7 @@ async def regenerate_endpoint(
                         compress_preview=compress_meta.summary_preview if compressed else None,
                         model_fallback=model_fallback,
                         fallback_profile_id=_turn_profile or None,
+                        loop_cfg=loop_cfg,
                     ):
                         yield line
                 finally:

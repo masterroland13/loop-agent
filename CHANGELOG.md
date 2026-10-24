@@ -8,7 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 
 ## [Unreleased]
 
+### Fixed
+- **C5 手动 compact 对照审查：** 上树失败不再假装成功；先严格对齐再按树重算切点；Goal ON 时手动压也钉目标。
+- **C4 检索对照审查：** 摘录带上 name/path；坏 max_hits 拒绝；会话根必须在用户数据目录内；不把 SQLite 当 JSONL 后备；`*.env` 不搜。
+- **C3 transform 对照审查：** 环内 working 比树长时，按当前 leaf 路径重算切点再上树，不再把工具列表的 cut 套到树上。
+- **C2 保留 user 对照审查：** 超帽后不再跳过中间去捞更早的短 user；上树用同一次压缩的 token 帽，避免内存 40、树上仍按 8K 多挂。
+- **C1 上树对照审查：** relink 失败回滚摘要和已改 parent，不留半条；树长度对不齐时不再用猜测切点硬写。JSONL compact 只在上树成功后追加。
+- **C0 落盘对照审查：** 中断/出错的 assistant 也会追加 JSONL；YOLO 的 diff/shell/memory 记为 gate；tool_start 可落 arguments；`data_path` 逃出用户数据目录时不写盘；坏行跳过不拖垮检索。
+
 ### Added
+- **手动 compact + 占用条（C5）：** `POST /api/sessions/{id}/compact` 可带 `focus`（Critical / Next 偏向这些词），摘要上树并保留 user。空会话 400，不改工作区。`GET /api/sessions/{id}/context` 给占用百分比；输入区旁显示估算占用，⋮ 里可手动压缩。`auto_compress` 默认仍关（按方案单独再开）。
+- **检索已折原文（C4）：** 工具 `search_session` 只搜本会话 `transcript.jsonl` 和 `turns/` spill，返回带行号的短摘录。不能搜其它会话、工作区或 `.env`，也不会一次塞回 50KB。系统提示只说明可用此工具找回压缩前细节。
+- **transform_context 接线（C3）：** 发送/再生和每次进模型前都走 `LoopConfig.transform_context`（默认 = 现有 compress + Goal pin）。环内两次 LLM 之间超限再压，仍走 C1 上树。`loop.py` 不复制切点/六节。Goal OFF 不注入目标块。
+- **压缩保留 user 原话（C2）：** 被折区间里的真实 user 按从近到远、默认 8K token 帽留在摘要后；超帽丢更早的。assistant / tool 不改成 user。树上把这些 user 挂在摘要和近端之间，下一轮 leaf 路径仍能看到。元问题仍不进六节 Next Steps。
+- **Compaction 上树（C1）：** 压缩成功后把六节摘要写成 `entry_type=compaction_summary`，挂在被折区间之前，近端改挂到摘要上。`leaf` 仍走当前 tip；被折原文留在 SQLite 和 `transcript.jsonl`，只从 leaf 路径排除。`auto_compress` 关、tail_trim、切点对不齐都不写假摘要。`loop.py` 未改。
+- **会话全文落盘（C0）：** 每条 user/assistant/tool/gate/compact 追加进用户数据目录里该会话的 `transcript.jsonl`，只追加不改写。密钥字段打码；附件只记 id 与文件名。不写工作区、不写安装目录。`loop uninstall` 不删这份文件。进模型的上下文不变。
 - **首次向导：** 工作区还没绑定时，窗口先让用户填一个模型（Base URL / API Key / Model ID，可从带地址的预置填入），再选已有文件夹或在当前位置新建。新建只建子文件夹，点「使用此文件夹」才绑定。只有一份空档案时会补全并激活它。新建接口拒绝相对父路径，避免落到进程当前目录。已绑定工作区的开发服务不会出现这一步。`loop shell` 拉起的后端不读 `backend/.env`。
 - **安装目录：** `loop install` 把构建好的界面、窗口程序和一份后端虚拟环境放进 `~/.local/lib/loop-agent`，写入 `~/.local/bin/loop`（走安装目录里的解释器），并放一份桌面启动项（绝对路径开窗，不依赖当前 PATH）。`loop uninstall` 只删这些程序文件，用户数据和工作区留下。已经装好的 `loop` 再执行 `install` 会停下来，要从仓库跑。`loop shell` 用这份环境开窗，页面由同一个后端在 8765 托管，不再从仓库源码导入。用户数据仍在 `~/.local/share/loop-agent`。开发用的 8000 / 5173 不动。桌面进程保存模型时不把密钥写进 `.env`。
 - **桌面壳：** `loop shell` 打开 Loop Agent 窗口，并拉起一份用 `~/.local/share/loop-agent` 的后端。关窗后这个进程停掉。8765 已被占用时不开第二份，避免接到别人的后端。`/health` 必须是 200 才算起来。父进程收到 SIGTERM / SIGHUP 会停掉子进程。WSLg 下关掉 WebKit 硬件加速，避免窗口全黑；网页铺满窗口。首次向导单独一页，不再盖在主界面上。窗口强制走 X11，避免 WSLg 的 Wayland 加速层把光标盖住。安装页用 fetch+eval 装入界面脚本，出错会写在页面上。打包时去掉 Markdown 邮箱识别里的 lookbehind，WebKitGTK 2.38 才能解析。这份数据目录不带工作区，也不动开发用的 `backend/data`。端口是 8765，避开正在跑的 8000 / 5173。
