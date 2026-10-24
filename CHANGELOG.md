@@ -17,6 +17,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - **C0 落盘对照审查：** 中断/出错的 assistant 也会追加 JSONL；YOLO 的 diff/shell/memory 记为 gate；tool_start 可落 arguments；`data_path` 逃出用户数据目录时不写盘；坏行跳过不拖垮检索。
 
 ### Added
+- **文档：** 根 README 改为产品首页；技术手册 `docs/design/loop-agent-manual.md`；C0–C5 调研/施工/审查长文 `docs/research/context-loop-c0-c5-review.md`（含简历表述）。
 - **手动 compact + 占用条（C5）：** `POST /api/sessions/{id}/compact` 可带 `focus`（Critical / Next 偏向这些词），摘要上树并保留 user。空会话 400，不改工作区。`GET /api/sessions/{id}/context` 给占用百分比；输入区旁显示估算占用，⋮ 里可手动压缩。`auto_compress` 默认仍关（按方案单独再开）。
 - **检索已折原文（C4）：** 工具 `search_session` 只搜本会话 `transcript.jsonl` 和 `turns/` spill，返回带行号的短摘录。不能搜其它会话、工作区或 `.env`，也不会一次塞回 50KB。系统提示只说明可用此工具找回压缩前细节。
 - **transform_context 接线（C3）：** 发送/再生和每次进模型前都走 `LoopConfig.transform_context`（默认 = 现有 compress + Goal pin）。环内两次 LLM 之间超限再压，仍走 C1 上树。`loop.py` 不复制切点/六节。Goal OFF 不注入目标块。

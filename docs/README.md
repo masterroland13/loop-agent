@@ -30,6 +30,7 @@
 
 ### design/
 
+- [`loop-agent-manual.md`](design/loop-agent-manual.md) — **技术手册**（分层、环、树、压缩漏斗、运维）
 - [`v1-7-headless-cli-design.md`](design/v1-7-headless-cli-design.md) — 无头 CLI / Runtime
 
 ### archive/
@@ -44,6 +45,7 @@
 - [`files-editor-office-scope.md`](research/files-editor-office-scope.md) — Office 范围调研（Excel/PPT 暂缓；Word/Markdown 体感与 docx 技术路线）
 - [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距
 - [`api-key-storage.md`](research/api-key-storage.md) — API Key 存放、泄露面、网页/桌面与 Cursor·Cline 对照
+- [`context-loop-c0-c5-review.md`](research/context-loop-c0-c5-review.md) — C0–C5 调研、施工、对照审查与简历表述
 - [`compaction-handoff-peers.md`](research/compaction-handoff-peers.md) — Codex/Cursor/Claude/Pi 压缩对照（2026-10-24 复审）+ 本仓 handoff 取舍
 - [`cursor-cot-activity-timeline.md`](research/cursor-cot-activity-timeline.md) — Cursor 式 CoT / Explored·Edited 调研与修订计划
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
