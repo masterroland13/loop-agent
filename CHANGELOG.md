@@ -9,6 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 ## [Unreleased]
 
 ### Fixed
+- **Files 重命名/复制：** 响应模型只用 `serialization_alias="from"`，服务返回的 `from` 键无法通过校验，`POST /api/workspace/files/rename` 和 `copy` 直接 500。改为与请求体一样使用 `alias="from"`，输入和输出都认这个键。
 - **C5 手动 compact 对照审查：** 上树失败不再假装成功；先严格对齐再按树重算切点；Goal ON 时手动压也钉目标。
 - **C4 检索对照审查：** 摘录带上 name/path；坏 max_hits 拒绝；会话根必须在用户数据目录内；不把 SQLite 当 JSONL 后备；`*.env` 不搜。
 - **C3 transform 对照审查：** 环内 working 比树长时，按当前 leaf 路径重算切点再上树，不再把工具列表的 cut 套到树上。
