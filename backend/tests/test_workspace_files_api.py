@@ -317,7 +317,10 @@ def test_http_mkdir_rename_delete(client: TestClient, ws: Path) -> None:
         json={"from": "pkg/a.txt", "to": "pkg/b.txt"},
     )
     assert rn.status_code == 200
-    assert rn.json()["path"] == "pkg/b.txt"
+    renamed = rn.json()
+    assert renamed["path"] == "pkg/b.txt"
+    assert renamed["from"] == "pkg/a.txt"
+    assert "from_path" not in renamed
     assert not (ws / "pkg" / "a.txt").exists()
 
     de = client.delete("/api/workspace/files/delete", params={"path": "pkg/b.txt"})
@@ -344,6 +347,10 @@ def test_http_copy_stats_reveal_recursive(client: TestClient, ws: Path, monkeypa
         json={"from": "box/one.txt", "to": "box/two.txt"},
     )
     assert copied.status_code == 200
+    copied_body = copied.json()
+    assert copied_body["path"] == "box/two.txt"
+    assert copied_body["from"] == "box/one.txt"
+    assert "from_path" not in copied_body
     assert (ws / "box" / "two.txt").exists()
 
     calls: list[list[str]] = []

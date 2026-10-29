@@ -235,7 +235,7 @@ class WorkspaceFileRenameRequest(BaseModel):
 
 
 class WorkspaceFileRenameResponse(BaseModel):
-    from_path: str = Field(..., serialization_alias="from")
+    from_path: str = Field(..., alias="from")
     path: str
 
     model_config = {"populate_by_name": True}
@@ -249,7 +249,7 @@ class WorkspaceFileCopyRequest(BaseModel):
 
 
 class WorkspaceFileCopyResponse(BaseModel):
-    from_path: str = Field(..., serialization_alias="from")
+    from_path: str = Field(..., alias="from")
     path: str
 
     model_config = {"populate_by_name": True}
