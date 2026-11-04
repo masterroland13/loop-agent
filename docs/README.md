@@ -19,6 +19,7 @@
 | [`design/`](design/) | L3 | 定稿设计（未完成方案勿放这里） | 否，按需 read |
 | [`archive/`](archive/) | L3 | **冻结**方案与考古；勿当进度源 | 否 |
 | [`research/`](research/) | L3 | 竞品/笔记/调研报告 | 否 |
+| [`research/overnight/`](research/overnight/) | L3 | **DRAFT** 过夜只读记录与索引（勿当进度源） | 否 |
 | [`dogfood/`](dogfood/) | L3 | 人工狗粮清单 | 否 |
 | [`plans/`](plans/) | L2 | **进行中** 实现方案 | 否，任务相关再读 |
 | `adr/`（可选，暂无） | L2 | 单条架构决策记录 | 否 |
@@ -52,6 +53,12 @@
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
 
+### research/overnight/
+
+过夜并行草稿的**总入口**（链到健康检查、档案对照、功能地图与相关 PR；**不**重复 [`feature-maps/`](#feature-maps) 长列表——该节随 `overnight/feature-maps` 草稿并入 [`docs/README.md`](README.md) 时再挂）。
+
+- [`INDEX.md`](research/overnight/INDEX.md) — 2026-11-04 过夜文档索引（DRAFT，不要合并）
+
 ### dogfood/
 
 - [`cot-s1-product-checklist.md`](dogfood/cot-s1-product-checklist.md) — **现行**产品狗粮全表（CoT S0–S1 / Goal OFF 主路径）
@@ -61,7 +68,7 @@
 
 ## 不要放在 docs/ 根的
 
-- 调研长文 → `research/`
+- 调研长文 → `research/`（过夜只读 → `research/overnight/`）
 - 已完成/冻结计划 → `archive/`
 - 狗粮剧本 → `dogfood/`
 - 临时脚本与报告 → 仓库根禁止堆积；用 `scripts/` / `scripts/debug/`

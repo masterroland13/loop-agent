@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 
 ## [Unreleased]
 
+### Added
+- **文档：** `docs/research/overnight/INDEX.md` 聚合过夜健康/档案对照与功能地图入口；`docs/README.md` 增加 `research/overnight/` 索引（DRAFT，勿合并）。
+
 ### Fixed
 - **Files 重命名/复制：** 响应模型只用 `serialization_alias="from"`，服务返回的 `from` 键无法通过校验，`POST /api/workspace/files/rename` 和 `copy` 直接 500。改为与请求体一样使用 `alias="from"`，输入和输出都认这个键。
 - **C5 手动 compact 对照审查：** 上树失败不再假装成功；先严格对齐再按树重算切点；Goal ON 时手动压也钉目标。
