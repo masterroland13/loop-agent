@@ -51,6 +51,7 @@
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
+- [`overnight/seats-without-mcp.md`](research/overnight/seats-without-mcp.md) — 进程内 Seat 与进程外 CAO 对照；多 Agent 不借 MCP（过夜调研，非施工）
 
 ### dogfood/
 
