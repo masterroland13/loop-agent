@@ -51,6 +51,7 @@
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
+- [`overnight/i18n-s1-keys.md`](research/overnight/i18n-s1-keys.md) — 空态与 Settings S1 缺键及建议中英（不改词条文件）
 
 ### dogfood/
 
