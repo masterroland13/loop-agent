@@ -41,6 +41,7 @@
 
 ### research/
 
+- [`overnight/ports-dev-servers.md`](research/overnight/ports-dev-servers.md) — 开发端口 8000 / 5173 / 8765：通宵与云端任务不要杀
 - [`files-viewer-mvp.md`](research/files-viewer-mvp.md) — Files 浏览/编辑/保存 MVP：人用 API、沙盒、方案 A、分层与风险
 - [`files-editor-office-scope.md`](research/files-editor-office-scope.md) — Office 范围调研（Excel/PPT 暂缓；Word/Markdown 体感与 docx 技术路线）
 - [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距
