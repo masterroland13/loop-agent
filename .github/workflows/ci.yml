@@ -1,0 +1,32 @@
+# Draft only. Backend pytest on pull requests and pushes.
+# No secrets. Does not change product defaults (auto_compress stays off).
+
+name: ci
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install backend and test extras
+        working-directory: backend
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run pytest
+        working-directory: backend
+        env:
+          PYTHONPATH: src
+        run: python -m pytest tests/ -q --tb=short -ra
