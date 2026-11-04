@@ -43,7 +43,8 @@
 
 - [`files-viewer-mvp.md`](research/files-viewer-mvp.md) — Files 浏览/编辑/保存 MVP：人用 API、沙盒、方案 A、分层与风险
 - [`files-editor-office-scope.md`](research/files-editor-office-scope.md) — Office 范围调研（Excel/PPT 暂缓；Word/Markdown 体感与 docx 技术路线）
-- [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距
+- [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距（文内 Electron/Tauri 首选已过时）
+- [`overnight/packaging-gap-doc-debt.md`](research/overnight/packaging-gap-doc-debt.md) — 包装差距文与已落地的 `loop shell`（WebKitGTK，无 Electron）冲突；只提案，不改原文
 - [`api-key-storage.md`](research/api-key-storage.md) — API Key 存放、泄露面、网页/桌面与 Cursor·Cline 对照
 - [`context-loop-c0-c5-review.md`](research/context-loop-c0-c5-review.md) — C0–C5 调研、施工、对照审查与简历表述
 - [`compaction-handoff-peers.md`](research/compaction-handoff-peers.md) — Codex/Cursor/Claude/Pi 压缩对照（2026-10-24 复审）+ 本仓 handoff 取舍
