@@ -20,6 +20,7 @@
 | [`archive/`](archive/) | L3 | **冻结**方案与考古；勿当进度源 | 否 |
 | [`research/`](research/) | L3 | 竞品/笔记/调研报告 | 否 |
 | [`dogfood/`](dogfood/) | L3 | 人工狗粮清单 | 否 |
+| [`feature-maps/`](feature-maps/) | L3 | 现有能力 → 真实路径。不是进度源 | 否，改代码前按需 read |
 | [`plans/`](plans/) | L2 | **进行中** 实现方案 | 否，任务相关再读 |
 | `adr/`（可选，暂无） | L2 | 单条架构决策记录 | 否 |
 
@@ -51,6 +52,18 @@
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
+
+### feature-maps/
+
+现有能力对照到源码路径。读序见 [`feature-maps/README.md`](feature-maps/README.md)。
+
+- [`runtime-dirs.md`](feature-maps/runtime-dirs.md) — 安装目录 / 用户数据 / 工作区
+- [`config-hooks.md`](feature-maps/config-hooks.md) — `LoopConfig`、Preset、Goal、`agent_settings.json`
+- [`agent-core.md`](feature-maps/agent-core.md) — 会话树与 `run_agent_loop`
+- [`coding-tools.md`](feature-maps/coding-tools.md) — registry、沙箱、shell、记忆、Skills
+- [`context-funnel.md`](feature-maps/context-funnel.md) — C0–C5。不含 C6/C7，不含 MCP client
+- [`cli.md`](feature-maps/cli.md) — `loop` 子命令
+- [`shell.md`](feature-maps/shell.md) — `loop install` / `shell` / `uninstall`
 
 ### dogfood/
 
