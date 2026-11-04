@@ -55,7 +55,7 @@
 
 ### research/overnight/
 
-过夜并行草稿的**总入口**（链到健康检查、档案对照、功能地图与相关 PR；**不**重复 [`feature-maps/`](#feature-maps) 长列表——该节随 `overnight/feature-maps` 草稿并入 [`docs/README.md`](README.md) 时再挂）。
+过夜并行草稿的**总入口**（链到健康检查、档案对照、功能地图与相关 PR；**不**在此重复 `docs/feature-maps/` 各页——该块由 `overnight/feature-maps` 草稿 PR 单独写入 [`docs/README.md`](README.md)）。
 
 - [`INDEX.md`](research/overnight/INDEX.md) — 2026-11-04 过夜文档索引（DRAFT，不要合并）
 
