@@ -96,7 +96,7 @@ npm run lint
 
 - 仓库没有配置 ruff、mypy、pyright。没有临时装一个来制造一份风格报告。
 - `npm ci` 顺带打印了 `npm audit`：3 个 high severity。没有单独做审计，也没有跑 `npm audit fix`。
-- GitHub Actions **还没有执行** `.github/workflows/ci.yml`。上面只是同一条 pytest 命令在 VM 里的结果。
+- 写这一节时，GitHub Actions 还没有执行这个文件。第一次实跑见下文「GitHub Actions 第一次实跑」。VM 上的 461 / 814 是提交前的结果，不是 Actions 日志。
 
 ## 工作流为什么写成这样
 
@@ -111,8 +111,21 @@ npm run lint
 - **触发**是全部 `pull_request` 和全部 `push`。同一仓库里的 PR 往往两条都会跑。没有加并发取消，文件保持短。`timeout-minutes: 15`：这次 pytest 本身 8.09 秒，余量给 pip。
 - **警告不当成错误。** 814 条是既有 `utcnow` / Pydantic class Config / FastAPI `on_event`。把它们变成 error 会让门禁变红，但行为测试是绿的。修这些不在这条草案里。
 
+## GitHub Actions 第一次实跑
+
+提交 `a62580fb2efc48014e7c6d7b589931d4ad53621e` 推上去之后，同一条工作流跑了两次，都成功。这就是上面说的「push 与 pull_request 会各跑一次」。没有密钥。Runner 上的 Python 是 **3.12.16**（`actions/setup-python@v7` 日志：`Successfully set up CPython (3.12.16)`），不是 VM 里的 3.12.3。
+
+| 事件 | 结论 | 运行 | pytest 页脚 |
+|------|------|------|-------------|
+| `push` | success，job 约 37s，整次运行 39s | https://github.com/masterroland13/loop-agent/actions/runs/41875214348 | `461 passed, 814 warnings in 12.13s` |
+| `pull_request` | success，job 约 32s，整次运行 34s | https://github.com/masterroland13/loop-agent/actions/runs/41875242115 | `461 passed, 814 warnings in 11.77s` |
+
+两条日志的页脚都与 VM 的 461 passed / 814 warnings 相同，用时更长。Actions 日志里同样先出现那 3 条 Pydantic class Config 警告。没有把 Actions 上的 814 条再按文件加总一遍；页脚是原样抄的。
+
+这次只说明「这个草案文件能在 GitHub 上跑完 pytest」。仍然不要合并：依赖没有锁，3.10 / 3.11 没跑，前端不在 CI 里，814 条警告也没有变成失败。
+
 ## 合并之前还缺什么
 
-1. 让 GitHub 真正跑一次这个文件（草案 PR 上就会触发）。在那之前，不能说 CI 已通。
+1. GitHub 已经跑过 `a62580f` 上的这个文件，push 与 pull_request 都是 461 passed。这不等于可以合并。
 2. 若要可复现，再决定是装 `uv` 并 `uv sync --frozen`，还是把这次 pip 版本写死。现在两样都没做。
 3. 前端 `tsc` 可以以后另加一个 job；oxlint 要先处理那 14 条 warning，或者明确允许 warning。
