@@ -52,6 +52,11 @@
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
 
+#### overnight/（草案，不升格为权威）
+
+- [`overnight/AGENTS-map.md`](research/overnight/AGENTS-map.md) — 后续编码 Agent：先读宪章 / 功能地图 / foundation-status / plans；import；禁止项
+- [`overnight/PROPOSAL-root-AGENTS.md`](research/overnight/PROPOSAL-root-AGENTS.md) — 根 `AGENTS.md` 增补提案；未合并，根文件未改
+
 ### dogfood/
 
 - [`cot-s1-product-checklist.md`](dogfood/cot-s1-product-checklist.md) — **现行**产品狗粮全表（CoT S0–S1 / Goal OFF 主路径）
