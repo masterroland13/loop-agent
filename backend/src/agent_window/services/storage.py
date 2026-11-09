@@ -1,6 +1,6 @@
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 
 from agent_window.config import settings
 from agent_window.models import Message, Role, Session as SessionModel
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def sanitize_filename(text: str) -> str:
@@ -42,7 +46,7 @@ def create_session(
     workspace_root: str | None = None,
 ) -> SessionModel:
     data_dir = ensure_user_data_dir(user_id)
-    session_id = f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    session_id = f"{_utc_now().strftime('%Y%m%d-%H%M%S')}"
     session_path = data_dir / session_id
     session_path.mkdir(parents=True, exist_ok=True)
 
@@ -116,7 +120,7 @@ def append_message_to_markdown(session: SessionModel, message: Message) -> None:
     header = f"""---
 session_id: {session.id}
 title: {session.title}
-updated_at: {datetime.utcnow().isoformat()}
+updated_at: {_utc_now().isoformat()}
 ---
 
 """
@@ -125,7 +129,7 @@ updated_at: {datetime.utcnow().isoformat()}
         session_md.write_text(header, encoding="utf-8")
 
     prefix = "## User" if message.role == Role.USER else "## Agent"
-    timestamp = message.created_at.isoformat() if message.created_at else datetime.utcnow().isoformat()
+    timestamp = message.created_at.isoformat() if message.created_at else _utc_now().isoformat()
     block = f"\n{prefix} ({message.id}) at {timestamp}\n\n{message.content}\n\n"
 
     with session_md.open("a", encoding="utf-8") as f:
@@ -142,7 +146,7 @@ def get_session(db: Session, session_id: str) -> Optional[SessionModel]:
 
 def update_session_title(db: Session, session: SessionModel, title: str) -> SessionModel:
     session.title = title
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     db.commit()
     db.refresh(session)
     return session
@@ -150,7 +154,7 @@ def update_session_title(db: Session, session: SessionModel, title: str) -> Sess
 
 def update_session_goal_mode(db: Session, session: SessionModel, enabled: bool) -> SessionModel:
     session.goal_mode = bool(enabled)
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     db.commit()
     db.refresh(session)
     return session
@@ -160,7 +164,7 @@ def update_session_pinned_goal(
     db: Session, session: SessionModel, pinned_goal: str | None
 ) -> SessionModel:
     session.pinned_goal = pinned_goal
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     db.commit()
     db.refresh(session)
     return session
@@ -177,7 +181,7 @@ def update_session_workspace_root(
     if existing:
         raise ValueError("session already bound")
     session.workspace_root = root
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     db.commit()
     db.refresh(session)
     return session
@@ -212,7 +216,7 @@ def add_message(
     db.commit()
     db.refresh(message)
     append_message_to_markdown(session, message)
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     if role == Role.USER and (entry_type or "message") == "message":
         session.last_prompt_at = message.created_at or session.updated_at
     if update_leaf:
@@ -226,7 +230,7 @@ def add_message(
 
 def set_session_leaf(db: Session, session: SessionModel, leaf_id: str | None) -> SessionModel:
     session.leaf_id = leaf_id
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utc_now()
     db.commit()
     db.refresh(session)
     return session

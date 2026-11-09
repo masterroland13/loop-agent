@@ -70,6 +70,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - LLM 错误提示分类：区分连接超时 / 地址不可达 / SSL 证书 / 401 / 403 / 404 / 429 / 500 / 502/503 / 模型不可用 / 响应超时 / 上下文超限
 
 ### Changed
+- **Service/API timestamps：** `storage` / `audit` / `turn_trace` / `routes` 里显式的 `datetime.utcnow()` 改为 timezone-aware UTC（`datetime.now(timezone.utc)`）。SQLite 落盘仍是 naive UTC 墙钟。FastAPI `on_event` 未改。
 - **SQLAlchemy timestamps：** `Session` / `Message` / `AuditEvent` 的 `created_at` / `updated_at` Column default 和 onupdate 改为 timezone-aware UTC（`datetime.now(timezone.utc)`），不再用 naive `datetime.utcnow`。SQLite 落盘仍是 naive UTC 墙钟。服务层里显式的 `datetime.utcnow()` 未改。
 - **Pydantic v2 config：** `Settings`、`SessionResponse`、`MessageResponse` 从 class-based `Config` 迁到 `model_config`（`SettingsConfigDict` / `ConfigDict`），去掉 import 时的 PydanticDeprecatedSince20 警告。`LOOP_SHELL=1` 仍跳过 `.env`。字段默认值未改。
 - **用户数据目录：** 没设 `APP_DATA_DIR` 时，会话和档案放到 `~/.local/share/loop-agent`，不再落到进程当前目录。开发在 `.env` 里写 `APP_DATA_DIR=./data` 仍用 `backend/data`。新目录不绑定工作区，也不自动搬旧数据。空白值回退到用户目录；以 `~` 开头的路径会展开成家目录。

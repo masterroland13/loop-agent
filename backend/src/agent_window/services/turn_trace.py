@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -108,7 +108,7 @@ class TurnTraceWriter:
         self.assistant.content = final_content
         self.assistant.summary = summary
         self.assistant.trace = serialize_trace(self._events)
-        self.session.updated_at = datetime.utcnow()
+        self.session.updated_at = datetime.now(timezone.utc)
         self.db.add(self.assistant)
         self.db.add(self.session)
         self.db.commit()
@@ -140,7 +140,7 @@ class TurnTraceWriter:
         self.assistant.content = partial or message
         self.assistant.summary = summary
         self.assistant.trace = serialize_trace(self._events)
-        self.session.updated_at = datetime.utcnow()
+        self.session.updated_at = datetime.now(timezone.utc)
         self.db.add(self.assistant)
         self.db.add(self.session)
         self.db.commit()
