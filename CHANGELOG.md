@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Dates are UTC+8.
 - **C0 落盘对照审查：** 中断/出错的 assistant 也会追加 JSONL；YOLO 的 diff/shell/memory 记为 gate；tool_start 可落 arguments；`data_path` 逃出用户数据目录时不写盘；坏行跳过不拖垮检索。
 
 ### Added
+- **Agent 阅读地图（草案）：** [`docs/research/overnight/AGENTS-map.md`](docs/research/overnight/AGENTS-map.md) 写明先读宪章、功能地图（宪章 §4 + 技术手册）、foundation-status、同题 plans，以及分层 import。禁止项：MCP 暂缓、不上 Electron、不把新策略焊进 `loop.py`、`auto_compress` 默认关、不做 C6/C7。同目录 [`PROPOSAL-root-AGENTS.md`](docs/research/overnight/PROPOSAL-root-AGENTS.md) 是根 `AGENTS.md` 的增补提案，根文件未改。
 - **文档：** 根 README 改为产品首页；技术手册 `docs/design/loop-agent-manual.md`；C0–C5 调研/施工/审查长文 `docs/research/context-loop-c0-c5-review.md`（含简历表述）。
 - **手动 compact + 占用条（C5）：** `POST /api/sessions/{id}/compact` 可带 `focus`（Critical / Next 偏向这些词），摘要上树并保留 user。空会话 400，不改工作区。`GET /api/sessions/{id}/context` 给占用百分比；输入区旁显示估算占用，⋮ 里可手动压缩。`auto_compress` 默认仍关（按方案单独再开）。
 - **检索已折原文（C4）：** 工具 `search_session` 只搜本会话 `transcript.jsonl` 和 `turns/` spill，返回带行号的短摘录。不能搜其它会话、工作区或 `.env`，也不会一次塞回 50KB。系统提示只说明可用此工具找回压缩前细节。
