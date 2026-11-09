@@ -41,6 +41,7 @@
 
 ### research/
 
+- [`overnight/ci-rationale.md`](research/overnight/ci-rationale.md) — 2026-11-04 云 VM 实跑 pytest / tsc / oxlint，以及只跑 pytest 的 CI 草案
 - [`files-viewer-mvp.md`](research/files-viewer-mvp.md) — Files 浏览/编辑/保存 MVP：人用 API、沙盒、方案 A、分层与风险
 - [`files-editor-office-scope.md`](research/files-editor-office-scope.md) — Office 范围调研（Excel/PPT 暂缓；Word/Markdown 体感与 docx 技术路线）
 - [`app-packaging-gap.md`](research/app-packaging-gap.md) — 桌面 App 封装路径与现状差距
