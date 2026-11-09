@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def default_user_data_dir() -> str:
@@ -38,11 +38,12 @@ class Settings(BaseSettings):
             return cleaned
         return value
 
-    class Config:
-        # Desktop shell sets LOOP_SHELL so the window does not inherit backend/.env.
-        env_file = None if os.environ.get("LOOP_SHELL") == "1" else ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    # Desktop shell sets LOOP_SHELL so the window does not inherit backend/.env.
+    model_config = SettingsConfigDict(
+        env_file=None if os.environ.get("LOOP_SHELL") == "1" else ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

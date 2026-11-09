@@ -1,5 +1,10 @@
 """App data dir is the user directory unless APP_DATA_DIR is set."""
 
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +15,51 @@ from agent_window.services.workspace import (
     get_workspace_root,
     require_root,
 )
+
+
+def _settings_from_child(cwd: Path, extra_env: dict[str, str]) -> tuple[str, str, str]:
+    """Import Settings in a child so LOOP_SHELL is read at class definition."""
+    src = Path(__file__).resolve().parents[1] / "src"
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin"),
+        "HOME": str(cwd / "home"),
+        "PYTHONPATH": str(src),
+        **extra_env,
+    }
+    code = (
+        "from agent_window.config import Settings\n"
+        "s = Settings()\n"
+        "print(repr(s.llm_api_key))\n"
+        "print(s.app_data_dir)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = proc.stdout.strip().splitlines()
+    return lines[-2], lines[-1], proc.stdout
+
+
+def test_loop_shell_skips_dotenv_file(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "LLM_API_KEY=secret-from-dotenv\nAPP_DATA_DIR=./data-from-dotenv\n",
+        encoding="utf-8",
+    )
+    key, data_dir, out = _settings_from_child(tmp_path, {"LOOP_SHELL": "1"})
+    assert key == "''"
+    assert data_dir != "./data-from-dotenv"
+    assert "secret-from-dotenv" not in out
+    assert "./data-from-dotenv" not in out
+
+    loaded_key, loaded_dir, loaded_out = _settings_from_child(tmp_path, {})
+    assert loaded_key == "'secret-from-dotenv'"
+    assert loaded_dir == "./data-from-dotenv"
+    assert "secret-from-dotenv" in loaded_out
+    assert loaded_key != "''"
 
 
 def test_unset_app_data_dir_is_user_dir_not_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

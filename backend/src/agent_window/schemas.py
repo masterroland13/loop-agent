@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CreateSessionRequest(BaseModel):
@@ -49,8 +49,7 @@ class SessionResponse(BaseModel):
     title_locked: bool = False
     last_prompt_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AttachmentResponse(BaseModel):
@@ -120,8 +119,7 @@ class MessageResponse(BaseModel):
     parent_id: str | None = None
     entry_type: str = "message"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class HealthResponse(BaseModel):
