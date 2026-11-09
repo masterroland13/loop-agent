@@ -1,6 +1,7 @@
 """FastAPI application entrypoint."""
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,22 +15,9 @@ from agent_window.services.shell import load_persisted_shells
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Agent Window Backend", version="0.1.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(router)
-mount_shell_frontend(app)
-
-
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
     n_patches = load_persisted_patches()
     n_shells = load_persisted_shells()
@@ -41,3 +29,18 @@ def startup():
             n_shells,
             n_memories,
         )
+    yield
+
+
+app = FastAPI(title="Agent Window Backend", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(router)
+mount_shell_frontend(app)
