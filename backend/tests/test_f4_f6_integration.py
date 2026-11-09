@@ -24,9 +24,16 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     class _FakeDateTime:
         @classmethod
-        def utcnow(cls) -> datetime:
+        def now(cls, tz=None) -> datetime:
             clock["t"] += timedelta(seconds=1)
-            return clock["t"]
+            value = clock["t"]
+            if tz is not None:
+                return value.replace(tzinfo=tz)
+            return value
+
+        @classmethod
+        def utcnow(cls) -> datetime:
+            return cls.now()
 
     monkeypatch.setattr("agent_window.services.storage.datetime", _FakeDateTime)
     import agent_window.models as models

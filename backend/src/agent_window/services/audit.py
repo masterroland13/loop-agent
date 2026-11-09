@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
@@ -24,7 +24,7 @@ def emit_audit(
         session_id=session_id,
         event_type=event_type,
         payload=json.dumps(payload or {}, ensure_ascii=False),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(event)
     db.commit()

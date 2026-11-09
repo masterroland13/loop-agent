@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
@@ -1604,7 +1604,7 @@ def update_session_endpoint(session_id: str, request: UpdateSessionRequest, db: 
         session = update_session_title(db, session, request.title.strip())
     if request.title_locked is True:
         session.title_locked = True
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(session)
     if request.goal_mode is not None:
@@ -1631,7 +1631,7 @@ def update_session_endpoint(session_id: str, request: UpdateSessionRequest, db: 
             session.profile_id = pid or None
         if "model_id" in request.model_fields_set:
             session.model_id = (request.model_id or "").strip() or None
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(session)
     if "pinned_goal" in request.model_fields_set:

@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
@@ -19,6 +19,10 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from agent_window.config import settings
 
 Base = declarative_base()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Role(str, enum.Enum):
@@ -44,8 +48,8 @@ class Session(Base):
     title_locked = Column(Boolean, nullable=False, default=False)
     # Sidebar clock. Set from the latest user instruction only.
     last_prompt_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
 
     messages = relationship(
         "Message",
@@ -70,7 +74,7 @@ class Message(Base):
     summary = Column(Text, default="")
     trace = Column(Text, default="[]")
     attachments = Column(Text, default="[]")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now)
 
     session = relationship("Session", back_populates="messages")
 
@@ -82,7 +86,7 @@ class AuditEvent(Base):
     session_id = Column(String(36), nullable=True, index=True)
     event_type = Column(String(64), nullable=False, index=True)
     payload = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=_utc_now, index=True)
 
 
 _engine = None
