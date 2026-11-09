@@ -7,7 +7,7 @@
 
 | 字段 | 值 |
 |------|-----|
-| **最后更新** | 2026-10-24 |
+| **最后更新** | 2026-11-09 |
 | **产品名** | Loop Agent |
 | **当前焦点** | 跨轮上下文加固 C0–C5 已落地；可选 C6 中途压 |
 | **架构阶段** | **A0–A4 完成** |
@@ -29,6 +29,7 @@
 
 | 日期 | 变更摘要 |
 |------|----------|
+| 2026-11-09 | **Knife A–D 弃用清理（#18–#21，合入 #21）：** A Pydantic `ConfigDict`/`model_config`；B SQLAlchemy 列默认 aware UTC；C 服务/API 层 `utcnow`→timezone-aware UTC；D FastAPI `lifespan` 替代 `on_event` startup。pytest **478**；全量 `-rw` 仅剩 Starlette `TestClient` import 一条 deprecation。未动 C6/C7/N2；`auto_compress` 默认仍关 |
 | 2026-10-24 | **C5 审查补洞：** 手动压必须上树成功才 200；Goal 可钉 |
 | 2026-10-24 | **C4 审查补洞：** 摘录字段、禁 SQLite 后备、会话根禁逃 |
 | 2026-10-24 | **C3 审查补洞：** 环内压按树重算切点上树 |
