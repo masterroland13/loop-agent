@@ -51,6 +51,7 @@
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
+- [`overnight/do-not-list-sync.md`](research/overnight/do-not-list-sync.md) — 过夜对齐：C6/C7/N2 缓做；`auto_compress` 默认关；不做 Electron；现阶段不做 MCP
 
 ### dogfood/
 
