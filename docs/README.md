@@ -51,6 +51,7 @@
 - [`github-spec-kit-report.md`](research/github-spec-kit-report.md) — Spec Kit 参考（非开发主轴）
 - [`pi-agent-ch06-messages.md`](research/pi-agent-ch06-messages.md)
 - [`pi-agent-ch08-context-engineering.md`](research/pi-agent-ch08-context-engineering.md)
+- [`overnight/skills-vs-task-md.md`](research/overnight/skills-vs-task-md.md) — Skills 拉模式（已落地）与 C8 `TASK.md` 路径提示（未实现）对照
 
 ### dogfood/
 
